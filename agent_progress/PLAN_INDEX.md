@@ -15,7 +15,7 @@ Historical PLAN-00..15 entries are preserved verbatim in [LEGACY_PLAN_INDEX.md](
 | SA-I | Resource/performance measurements | PARTIAL: idle/baseline measured; active soak pending | [Final handoff](standalone/HANDOFF.md) |
 | SA-J | Reproducible deployment, rollback and documentation | PASS | [Operations](../docs/STANDALONE.md), [Final handoff](standalone/HANDOFF.md) |
 
-Current deployed release (RC-03): `/root/maixcam-standalone-20261101-034054-810730ff`.
+Current deployed release (RC-04): `/root/maixcam-standalone-20261101-040215-f4dfc2fc`.
 
 Operator overrides: open AP, no Wi-Fi password; original click-to-toggle Talk, no new Hold mode. Operator confirmed video and bidirectional audio. Overall implementation is deployed; remaining acceptance limits are explicitly retained in the final handoff.
 
@@ -24,3 +24,4 @@ Operator overrides: open AP, no Wi-Fi password; original click-to-toggle Talk, n
 | RC-01 | Record the displayed camera orientation, including changes while recording | PASS: real-browser encode/decode, target health and served assets verified | [Recording handoff](standalone/RECORDING_HANDOFF.md) |
 | RC-02 | Keep real video/audio recording preview, replay and deletion | PASS: browser media/preview regression and trusted served assets | [Preview handoff](standalone/PREVIEW_HANDOFF.md) |
 | RC-03 | Retain completed recordings across F5/browser restart with preview/download | Real profile persistence/failure tests PASS; deployed `/root/maixcam-standalone-20261101-034054-810730ff` | [Persistence handoff](standalone/PERSISTENCE_HANDOFF.md) |
+| RC-04 | Real-time PC mic background noise suppression & hysteresis RMS noise gate | Automated DSP tests PASS, Chromium UI & route tests PASS; deployed `/root/maixcam-standalone-20261101-040215-f4dfc2fc` | [Noise Gate handoff](handoffs/PC_TO_MAIX_NOISE_GATE_HANDOFF.md) |

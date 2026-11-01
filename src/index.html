@@ -671,6 +671,9 @@
             <div id="rotation-badge" class="status-pill">
                 <span>Rotation: 0 deg</span>
             </div>
+            <div id="gate-status-badge" class="status-pill" title="PC Mic Noise Gate status">
+                <span id="gate-status-text">Gate: Idle</span>
+            </div>
         </div>
 
         <span id="clock" class="session-clock tabular">--:--:-- UTC</span>
@@ -749,7 +752,11 @@
                 <div class="tab-bar">
                     <button id="tab-records-btn" class="tab-btn active" onclick="switchTab('records')">
                         <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
-                        <span>Video & Audio Records</span>
+                        <span>Records</span>
+                    </button>
+                    <button id="tab-audio-btn" class="tab-btn" onclick="switchTab('audio')">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+                        <span>Audio DSP</span>
                     </button>
                     <button id="tab-hw-btn" class="tab-btn" onclick="switchTab('hw')">
                         <svg class="icon" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 7h10v10H7z"/><line x1="3" x2="7" y1="9" y2="9"/><line x1="3" x2="7" y1="15" y2="15"/><line x1="17" x2="21" y1="9" y2="9"/><line x1="17" x2="21" y1="15" y2="15"/></svg>
@@ -885,6 +892,104 @@
                         </div>
                         <video id="vault-video" controls playsinline preload="none" hidden></video>
                         <audio id="vault-audio" controls preload="none"></audio>
+                    </div>
+                </div>
+
+                <div id="tab-audio-content" style="display:none; flex-direction:column; flex:1; min-height:0; overflow-y:auto; padding:12px; gap:12px;">
+                    <!-- Architecture Banner -->
+                    <div style="background:var(--raised); border:1px solid var(--border); border-radius:var(--radius-card); padding:10px 12px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+                            <span style="font-weight:600; font-size:12px; color:var(--text);">PC Uplink Audio Pipeline</span>
+                            <span id="gate-pipeline-status" class="meta-chip tabular" style="font-size:10px;">AudioWorklet Ready</span>
+                        </div>
+                        <div style="font-size:10px; color:var(--muted); line-height:1.4;">
+                            PC Mic &rarr; Browser Noise Suppression &rarr; AudioWorklet Noise Gate &rarr; Opus WebRTC &rarr; MaixCAM &rarr; A2DP
+                        </div>
+                    </div>
+
+                    <!-- Noise Suppression Card -->
+                    <div style="background:var(--raised); border:1px solid var(--border); border-radius:var(--radius-card); padding:10px 12px; display:flex; flex-direction:column; gap:6px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <span style="font-weight:600; font-size:12px; color:var(--text);">1. Stationary Noise Suppression</span>
+                            <span class="meta-chip" style="background:var(--pill-positive-bg); color:var(--pill-positive-ink);">Enabled (Browser)</span>
+                        </div>
+                        <div style="font-size:11px; color:var(--muted); line-height:1.4;">
+                            Acoustic Echo Cancellation (<code style="color:var(--text);">echoCancellation: true</code>) and Stationary Noise Suppression (<code style="color:var(--text);">noiseSuppression: true</code>) attenuate continuous fan and background hum. Auto Gain Control is disabled (<code style="color:var(--text);">autoGainControl: false</code>) to prevent noise amplification during speech pauses.
+                        </div>
+                    </div>
+
+                    <!-- Noise Gate Card -->
+                    <div style="background:var(--raised); border:1px solid var(--border); border-radius:var(--radius-card); padding:10px 12px; display:flex; flex-direction:column; gap:10px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <span style="font-weight:600; font-size:12px; color:var(--text);">2. Hysteresis RMS Noise Gate</span>
+                            <button id="gate-toggle-btn" class="btn-action-sm" onclick="toggleNoiseGateUI()" style="height:26px; padding:0 10px; font-weight:600; color:var(--positive);">Noise Gate: ENABLED</button>
+                        </div>
+
+                        <!-- Gate State & Gain indicators -->
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span id="gate-state-pill" class="meta-chip tabular" style="background:var(--pill-neutral-bg); color:var(--pill-neutral-ink); font-weight:600;">State: CLOSED</span>
+                            <span id="gate-gain-pill" class="meta-chip tabular">Gain: -35.0 dB</span>
+                            <span style="font-size:11px; color:var(--muted); margin-left:auto;">Mode: Hysteresis</span>
+                        </div>
+
+                        <!-- Live RMS Meter -->
+                        <div style="display:flex; flex-direction:column; gap:4px;">
+                            <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--muted);" class="tabular">
+                                <span>-60 dBFS</span>
+                                <span id="gate-meter-text" style="font-weight:600; color:var(--text);">-inf dBFS</span>
+                                <span>0 dBFS</span>
+                            </div>
+                            <div style="height:10px; background:var(--surface); border:1px solid var(--border); border-radius:3px; position:relative; overflow:hidden;">
+                                <div id="gate-meter-fill" style="height:100%; width:0%; background:var(--accent); transition:width 0.08s ease, background 0.1s ease;"></div>
+                                <!-- Threshold Markers: -35 dBFS is 41.7%, -32 dBFS is 46.7% from -60 -->
+                                <div style="position:absolute; top:0; bottom:0; left:41.7%; width:1px; background:var(--negative); opacity:0.8;" title="Close Threshold: -35 dBFS"></div>
+                                <div style="position:absolute; top:0; bottom:0; left:46.7%; width:1px; background:var(--positive); opacity:0.8;" title="Open Threshold: -32 dBFS"></div>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; font-size:9px; color:var(--muted);">
+                                <span>Noise Floor</span>
+                                <span>&larr; Close (-35) / Open (-32) &rarr;</span>
+                                <span>Peak</span>
+                            </div>
+                        </div>
+
+                        <!-- Threshold Sliders -->
+                        <div style="display:flex; flex-direction:column; gap:8px;">
+                            <div style="display:flex; flex-direction:column; gap:2px;">
+                                <div style="display:flex; justify-content:space-between; font-size:11px;">
+                                    <span style="color:var(--text);">Open Threshold:</span>
+                                    <span id="gate-open-val" class="tabular" style="font-weight:600; color:var(--positive);">-32 dBFS</span>
+                                </div>
+                                <input id="gate-open-slider" type="range" min="-60" max="-10" step="1" value="-32" oninput="setGateOpenThresholdUI(this.value)" style="width:100%; accent-color:var(--positive); cursor:pointer;">
+                            </div>
+
+                            <div style="display:flex; flex-direction:column; gap:2px;">
+                                <div style="display:flex; justify-content:space-between; font-size:11px;">
+                                    <span style="color:var(--text);">Close Threshold:</span>
+                                    <span id="gate-close-val" class="tabular" style="font-weight:600; color:var(--negative);">-35 dBFS</span>
+                                </div>
+                                <input id="gate-close-slider" type="range" min="-60" max="-10" step="1" value="-35" oninput="setGateCloseThresholdUI(this.value)" style="width:100%; accent-color:var(--negative); cursor:pointer;">
+                            </div>
+                        </div>
+
+                        <!-- Fixed Timing Parameters Readout -->
+                        <div class="spec-list" style="margin-top:2px;">
+                            <div class="spec-row">
+                                <span class="spec-name">RMS Window</span>
+                                <span class="spec-val tabular">20 ms (sliding)</span>
+                            </div>
+                            <div class="spec-row">
+                                <span class="spec-name">Attack / Hold / Release</span>
+                                <span class="spec-val tabular">5 ms / 200 ms / 150 ms</span>
+                            </div>
+                            <div class="spec-row">
+                                <span class="spec-name">Closed State Attenuation</span>
+                                <span class="spec-val tabular">-35 dB (~0.018x continuous)</span>
+                            </div>
+                        </div>
+
+                        <div style="display:flex; justify-content:flex-end; margin-top:2px;">
+                            <button class="btn-action-sm" onclick="resetGateDefaultsUI()" style="height:26px; padding:0 12px;" title="Reset parameters to defaults">Reset to Defaults</button>
+                        </div>
                     </div>
                 </div>
 
@@ -1091,22 +1196,13 @@
         applyRotation();
 
         function switchTab(tab) {
-            const recordsBtn = document.getElementById('tab-records-btn');
-            const hwBtn = document.getElementById('tab-hw-btn');
-            const recordsContent = document.getElementById('tab-records-content');
-            const hwContent = document.getElementById('tab-hw-content');
-
-            if (tab === 'records') {
-                recordsBtn.classList.add('active');
-                hwBtn.classList.remove('active');
-                recordsContent.style.display = 'flex';
-                hwContent.style.display = 'none';
-            } else {
-                hwBtn.classList.add('active');
-                recordsBtn.classList.remove('active');
-                hwContent.style.display = 'flex';
-                recordsContent.style.display = 'none';
-            }
+            const tabs = ['records', 'audio', 'hw'];
+            tabs.forEach(t => {
+                const btn = document.getElementById('tab-' + t + '-btn');
+                const content = document.getElementById('tab-' + t + '-content');
+                if (btn) btn.classList.toggle('active', t === tab);
+                if (content) content.style.display = (t === tab) ? 'flex' : 'none';
+            });
         }
 
         const localRecordings = new Map();

@@ -49,3 +49,14 @@ Paths in Evidence column are under `agent_progress/standalone/evidence` unless a
 | Persistent delete stays deleted after F5 | PASS | recording-persistence/result.json |
 | Injected quota failure retains downloadable unsaved clip and navigation warning | PASS | recording-persistence/result.json |
 | Injected persistent-delete failure retains saved object/UI | PASS | recording-persistence/result.json |
+
+| Noise Suppression & Noise Gate follow-up | Outcome | Evidence |
+|---|---|---|
+| Background Fan Noise (-38 dBFS) stays CLOSED, 35 dB attenuation, continuous | PASS | audio-noise-gate/result.json |
+| Speech Lifecycle (-20 dBFS): attack ≤5 ms, gain 1.0, 200 ms hold, 150 ms release | PASS | audio-noise-gate/result.json |
+| Repeated Speech ('Alo alo - Mot hai ba bon') with 120 ms pauses: dropout-free | PASS | audio-noise-gate/result.json |
+| Hysteresis threshold stability and smooth unity bypass | PASS | audio-noise-gate/result.json |
+| Audio DSP tab navigation, sliders, hysteresis clamp and defaults reset | PASS | audio-noise-gate/result.json |
+| Worklet route /noise-gate-processor.js serves valid processor code | PASS | audio-noise-gate/result.json |
+| Speaker isolation: mic graph terminates in MediaStreamDestination, not speakers | PASS | audio-noise-gate/result.json |
+| Physical camera & Bluetooth A2DP coexistence | PASS | deploy output; bluetoothctl connected |

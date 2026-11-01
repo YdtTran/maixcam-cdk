@@ -706,6 +706,9 @@ private:
             <div id="rotation-badge" class="status-pill">
                 <span>Rotation: 0 deg</span>
             </div>
+            <div id="gate-status-badge" class="status-pill" title="PC Mic Noise Gate status">
+                <span id="gate-status-text">Gate: Idle</span>
+            </div>
         </div>
 
         <span id="clock" class="session-clock tabular">--:--:-- UTC</span>
@@ -784,7 +787,11 @@ private:
                 <div class="tab-bar">
                     <button id="tab-records-btn" class="tab-btn active" onclick="switchTab('records')">
                         <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
-                        <span>Video & Audio Records</span>
+                        <span>Records</span>
+                    </button>
+                    <button id="tab-audio-btn" class="tab-btn" onclick="switchTab('audio')">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+                        <span>Audio DSP</span>
                     </button>
                     <button id="tab-hw-btn" class="tab-btn" onclick="switchTab('hw')">
                         <svg class="icon" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 7h10v10H7z"/><line x1="3" x2="7" y1="9" y2="9"/><line x1="3" x2="7" y1="15" y2="15"/><line x1="17" x2="21" y1="9" y2="9"/><line x1="17" x2="21" y1="15" y2="15"/></svg>
@@ -920,6 +927,104 @@ private:
                         </div>
                         <video id="vault-video" controls playsinline preload="none" hidden></video>
                         <audio id="vault-audio" controls preload="none"></audio>
+                    </div>
+                </div>
+
+                <div id="tab-audio-content" style="display:none; flex-direction:column; flex:1; min-height:0; overflow-y:auto; padding:12px; gap:12px;">
+                    <!-- Architecture Banner -->
+                    <div style="background:var(--raised); border:1px solid var(--border); border-radius:var(--radius-card); padding:10px 12px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+                            <span style="font-weight:600; font-size:12px; color:var(--text);">PC Uplink Audio Pipeline</span>
+                            <span id="gate-pipeline-status" class="meta-chip tabular" style="font-size:10px;">AudioWorklet Ready</span>
+                        </div>
+                        <div style="font-size:10px; color:var(--muted); line-height:1.4;">
+                            PC Mic &rarr; Browser Noise Suppression &rarr; AudioWorklet Noise Gate &rarr; Opus WebRTC &rarr; MaixCAM &rarr; A2DP
+                        </div>
+                    </div>
+
+                    <!-- Noise Suppression Card -->
+                    <div style="background:var(--raised); border:1px solid var(--border); border-radius:var(--radius-card); padding:10px 12px; display:flex; flex-direction:column; gap:6px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <span style="font-weight:600; font-size:12px; color:var(--text);">1. Stationary Noise Suppression</span>
+                            <span class="meta-chip" style="background:var(--pill-positive-bg); color:var(--pill-positive-ink);">Enabled (Browser)</span>
+                        </div>
+                        <div style="font-size:11px; color:var(--muted); line-height:1.4;">
+                            Acoustic Echo Cancellation (<code style="color:var(--text);">echoCancellation: true</code>) and Stationary Noise Suppression (<code style="color:var(--text);">noiseSuppression: true</code>) attenuate continuous fan and background hum. Auto Gain Control is disabled (<code style="color:var(--text);">autoGainControl: false</code>) to prevent noise amplification during speech pauses.
+                        </div>
+                    </div>
+
+                    <!-- Noise Gate Card -->
+                    <div style="background:var(--raised); border:1px solid var(--border); border-radius:var(--radius-card); padding:10px 12px; display:flex; flex-direction:column; gap:10px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <span style="font-weight:600; font-size:12px; color:var(--text);">2. Hysteresis RMS Noise Gate</span>
+                            <button id="gate-toggle-btn" class="btn-action-sm" onclick="toggleNoiseGateUI()" style="height:26px; padding:0 10px; font-weight:600; color:var(--positive);">Noise Gate: ENABLED</button>
+                        </div>
+
+                        <!-- Gate State & Gain indicators -->
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span id="gate-state-pill" class="meta-chip tabular" style="background:var(--pill-neutral-bg); color:var(--pill-neutral-ink); font-weight:600;">State: CLOSED</span>
+                            <span id="gate-gain-pill" class="meta-chip tabular">Gain: -35.0 dB</span>
+                            <span style="font-size:11px; color:var(--muted); margin-left:auto;">Mode: Hysteresis</span>
+                        </div>
+
+                        <!-- Live RMS Meter -->
+                        <div style="display:flex; flex-direction:column; gap:4px;">
+                            <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--muted);" class="tabular">
+                                <span>-60 dBFS</span>
+                                <span id="gate-meter-text" style="font-weight:600; color:var(--text);">-inf dBFS</span>
+                                <span>0 dBFS</span>
+                            </div>
+                            <div style="height:10px; background:var(--surface); border:1px solid var(--border); border-radius:3px; position:relative; overflow:hidden;">
+                                <div id="gate-meter-fill" style="height:100%; width:0%; background:var(--accent); transition:width 0.08s ease, background 0.1s ease;"></div>
+                                <!-- Threshold Markers: -35 dBFS is 41.7%, -32 dBFS is 46.7% from -60 -->
+                                <div style="position:absolute; top:0; bottom:0; left:41.7%; width:1px; background:var(--negative); opacity:0.8;" title="Close Threshold: -35 dBFS"></div>
+                                <div style="position:absolute; top:0; bottom:0; left:46.7%; width:1px; background:var(--positive); opacity:0.8;" title="Open Threshold: -32 dBFS"></div>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; font-size:9px; color:var(--muted);">
+                                <span>Noise Floor</span>
+                                <span>&larr; Close (-35) / Open (-32) &rarr;</span>
+                                <span>Peak</span>
+                            </div>
+                        </div>
+
+                        <!-- Threshold Sliders -->
+                        <div style="display:flex; flex-direction:column; gap:8px;">
+                            <div style="display:flex; flex-direction:column; gap:2px;">
+                                <div style="display:flex; justify-content:space-between; font-size:11px;">
+                                    <span style="color:var(--text);">Open Threshold:</span>
+                                    <span id="gate-open-val" class="tabular" style="font-weight:600; color:var(--positive);">-32 dBFS</span>
+                                </div>
+                                <input id="gate-open-slider" type="range" min="-60" max="-10" step="1" value="-32" oninput="setGateOpenThresholdUI(this.value)" style="width:100%; accent-color:var(--positive); cursor:pointer;">
+                            </div>
+
+                            <div style="display:flex; flex-direction:column; gap:2px;">
+                                <div style="display:flex; justify-content:space-between; font-size:11px;">
+                                    <span style="color:var(--text);">Close Threshold:</span>
+                                    <span id="gate-close-val" class="tabular" style="font-weight:600; color:var(--negative);">-35 dBFS</span>
+                                </div>
+                                <input id="gate-close-slider" type="range" min="-60" max="-10" step="1" value="-35" oninput="setGateCloseThresholdUI(this.value)" style="width:100%; accent-color:var(--negative); cursor:pointer;">
+                            </div>
+                        </div>
+
+                        <!-- Fixed Timing Parameters Readout -->
+                        <div class="spec-list" style="margin-top:2px;">
+                            <div class="spec-row">
+                                <span class="spec-name">RMS Window</span>
+                                <span class="spec-val tabular">20 ms (sliding)</span>
+                            </div>
+                            <div class="spec-row">
+                                <span class="spec-name">Attack / Hold / Release</span>
+                                <span class="spec-val tabular">5 ms / 200 ms / 150 ms</span>
+                            </div>
+                            <div class="spec-row">
+                                <span class="spec-name">Closed State Attenuation</span>
+                                <span class="spec-val tabular">-35 dB (~0.018x continuous)</span>
+                            </div>
+                        </div>
+
+                        <div style="display:flex; justify-content:flex-end; margin-top:2px;">
+                            <button class="btn-action-sm" onclick="resetGateDefaultsUI()" style="height:26px; padding:0 12px;" title="Reset parameters to defaults">Reset to Defaults</button>
+                        </div>
                     </div>
                 </div>
 
@@ -1126,22 +1231,13 @@ private:
         applyRotation();
 
         function switchTab(tab) {
-            const recordsBtn = document.getElementById('tab-records-btn');
-            const hwBtn = document.getElementById('tab-hw-btn');
-            const recordsContent = document.getElementById('tab-records-content');
-            const hwContent = document.getElementById('tab-hw-content');
-
-            if (tab === 'records') {
-                recordsBtn.classList.add('active');
-                hwBtn.classList.remove('active');
-                recordsContent.style.display = 'flex';
-                hwContent.style.display = 'none';
-            } else {
-                hwBtn.classList.add('active');
-                recordsBtn.classList.remove('active');
-                hwContent.style.display = 'flex';
-                recordsContent.style.display = 'none';
-            }
+            const tabs = ['records', 'audio', 'hw'];
+            tabs.forEach(t => {
+                const btn = document.getElementById('tab-' + t + '-btn');
+                const content = document.getElementById('tab-' + t + '-content');
+                if (btn) btn.classList.toggle('active', t === tab);
+                if (content) content.style.display = (t === tab) ? 'flex' : 'none';
+            });
         }
 
         const localRecordings = new Map();
@@ -1527,6 +1623,7 @@ const clientId = randomId(10);
         }
         websocket.send(JSON.stringify({ type: 'ping' }));
     }, 5000);
+
     let pc = null;
     let dc = null;
     let localStream = null;
@@ -1535,6 +1632,243 @@ const clientId = randomId(10);
     let audioTransceiver = null;
     let isListening = false;
     let isTalking = false;
+
+    // --- AUDIO WORKLET & NOISE GATE STATE ---
+    let audioContext = null;
+    let micSourceNode = null;
+    let noiseGateNode = null;
+    let micDestinationNode = null;
+    let processedMicTrack = null;
+    let noiseGateLastState = 'CLOSED';
+
+    const noiseGateParams = {
+        enabled: true,
+        openThreshold: -32.0,    // dBFS
+        closeThreshold: -35.0,   // dBFS
+        rmsWindowMs: 20.0,       // ms
+        attackMs: 5.0,           // ms
+        holdMs: 200.0,           // ms
+        releaseMs: 150.0,        // ms
+        closedGainDb: -35.0      // dB
+    };
+
+    const NOISE_GATE_PROCESSOR_INLINE = `
+class NoiseGateProcessor extends AudioWorkletProcessor {
+    constructor(options) {
+        super(options);
+        this.enabled = true;
+        this.openThreshold = -32.0;
+        this.closeThreshold = -35.0;
+        this.rmsWindowMs = 20.0;
+        this.attackMs = 5.0;
+        this.holdMs = 200.0;
+        this.releaseMs = 150.0;
+        this.closedGainDb = -35.0;
+        this.closedGainLinear = Math.pow(10.0, this.closedGainDb / 20.0);
+        this.currentGain = this.closedGainLinear;
+
+        this.STATE_CLOSED = 0;
+        this.STATE_ATTACK = 1;
+        this.STATE_OPEN = 2;
+        this.STATE_HOLD = 3;
+        this.STATE_RELEASE = 4;
+        this.state = this.STATE_CLOSED;
+        this.holdCounter = 0;
+
+        this.maxWindowSamples = 4096;
+        this.ringBuffer = new Float32Array(this.maxWindowSamples);
+        this.windowSamples = Math.max(1, Math.min(this.maxWindowSamples, Math.round(sampleRate * (this.rmsWindowMs / 1000.0))));
+        this.writeIdx = 0;
+        this.runningSumSquares = 0.0;
+        this.resyncCounter = 0;
+
+        this.telemetryCounter = 0;
+        this.telemetryIntervalBlocks = Math.max(1, Math.round((sampleRate * 0.08) / 128.0));
+        this.lastDbfs = -140.0;
+
+        this.port.onmessage = (e) => {
+            const data = e.data;
+            if (!data) return;
+            if (data.type === 'setParams') {
+                if (typeof data.enabled === 'boolean') this.enabled = data.enabled;
+                if (typeof data.openThreshold === 'number') this.openThreshold = data.openThreshold;
+                if (typeof data.closeThreshold === 'number') this.closeThreshold = data.closeThreshold;
+                if (typeof data.attackMs === 'number') this.attackMs = data.attackMs;
+                if (typeof data.holdMs === 'number') this.holdMs = data.holdMs;
+                if (typeof data.releaseMs === 'number') this.releaseMs = data.releaseMs;
+                if (typeof data.closedGainDb === 'number') {
+                    this.closedGainDb = data.closedGainDb;
+                    this.closedGainLinear = Math.pow(10.0, this.closedGainDb / 20.0);
+                }
+                if (typeof data.rmsWindowMs === 'number') {
+                    this.rmsWindowMs = data.rmsWindowMs;
+                    this.updateWindowSize();
+                }
+            } else if (data.type === 'reset') {
+                this.enabled = true;
+                this.openThreshold = -32.0;
+                this.closeThreshold = -35.0;
+                this.attackMs = 5.0;
+                this.holdMs = 200.0;
+                this.releaseMs = 150.0;
+                this.closedGainDb = -35.0;
+                this.closedGainLinear = Math.pow(10.0, -35.0 / 20.0);
+                this.rmsWindowMs = 20.0;
+                this.updateWindowSize();
+            }
+        };
+    }
+
+    updateWindowSize() {
+        const newSize = Math.max(1, Math.min(this.maxWindowSamples, Math.round(sampleRate * (this.rmsWindowMs / 1000.0))));
+        if (newSize !== this.windowSamples) {
+            this.ringBuffer.fill(0);
+            this.writeIdx = 0;
+            this.runningSumSquares = 0.0;
+            this.windowSamples = newSize;
+        }
+    }
+
+    process(inputs, outputs, parameters) {
+        const input = inputs[0];
+        const output = outputs[0];
+        if (!output || output.length === 0) return true;
+        const numOutChannels = output.length;
+        const outSamples = output[0].length;
+        if (!input || input.length === 0 || !input[0] || input[0].length === 0) {
+            for (let c = 0; c < numOutChannels; c++) output[c].fill(0);
+            return true;
+        }
+        const numInChannels = input.length;
+        const numSamples = Math.min(input[0].length, outSamples);
+
+        const attackSamples = Math.max(1, Math.round(sampleRate * (this.attackMs / 1000.0)));
+        const releaseSamples = Math.max(1, Math.round(sampleRate * (this.releaseMs / 1000.0)));
+        const holdSamplesTotal = Math.max(1, Math.round(sampleRate * (this.holdMs / 1000.0)));
+
+        const attackStep = (1.0 - this.closedGainLinear) / attackSamples;
+        const releaseStep = (1.0 - this.closedGainLinear) / releaseSamples;
+
+        const epsilon = 1e-7;
+        const invInChannels = 1.0 / numInChannels;
+        const winSamples = this.windowSamples;
+        const ring = this.ringBuffer;
+
+        let curGain = this.currentGain;
+        let st = this.state;
+        let holdRemaining = this.holdCounter;
+        let runSum = this.runningSumSquares;
+        let wIdx = this.writeIdx;
+        let blockMaxDbfs = -140.0;
+
+        for (let i = 0; i < numSamples; i++) {
+            let sampleSqSum = 0.0;
+            for (let c = 0; c < numInChannels; c++) {
+                const s = input[c][i];
+                sampleSqSum += s * s;
+            }
+            const currentSq = sampleSqSum * invInChannels;
+            const oldSq = ring[wIdx];
+            ring[wIdx] = currentSq;
+            runSum += currentSq - oldSq;
+            wIdx++;
+            if (wIdx >= winSamples) wIdx = 0;
+
+            let meanSq = runSum / winSamples;
+            if (meanSq < 0.0) meanSq = 0.0;
+            const rms = Math.sqrt(meanSq);
+            const dbfs = 20.0 * Math.log10(rms > epsilon ? rms : epsilon);
+            if (dbfs > blockMaxDbfs) blockMaxDbfs = dbfs;
+
+            if (!this.enabled) {
+                if (curGain < 1.0) {
+                    curGain += attackStep;
+                    if (curGain > 1.0) curGain = 1.0;
+                } else if (curGain > 1.0) {
+                    curGain = 1.0;
+                }
+                st = this.STATE_OPEN;
+            } else {
+                switch (st) {
+                    case this.STATE_CLOSED:
+                        curGain = this.closedGainLinear;
+                        if (dbfs >= this.openThreshold) st = this.STATE_ATTACK;
+                        break;
+                    case this.STATE_ATTACK:
+                        curGain += attackStep;
+                        if (curGain >= 1.0) {
+                            curGain = 1.0;
+                            st = this.STATE_OPEN;
+                        }
+                        break;
+                    case this.STATE_OPEN:
+                        curGain = 1.0;
+                        if (dbfs < this.closeThreshold) {
+                            st = this.STATE_HOLD;
+                            holdRemaining = holdSamplesTotal;
+                        }
+                        break;
+                    case this.STATE_HOLD:
+                        curGain = 1.0;
+                        if (dbfs >= this.closeThreshold) {
+                            st = this.STATE_OPEN;
+                        } else {
+                            holdRemaining--;
+                            if (holdRemaining <= 0) st = this.STATE_RELEASE;
+                        }
+                        break;
+                    case this.STATE_RELEASE:
+                        if (dbfs >= this.openThreshold) {
+                            st = this.STATE_ATTACK;
+                        } else {
+                            curGain -= releaseStep;
+                            if (curGain <= this.closedGainLinear) {
+                                curGain = this.closedGainLinear;
+                                st = this.STATE_CLOSED;
+                            }
+                        }
+                        break;
+                }
+            }
+
+            for (let c = 0; c < numOutChannels; c++) {
+                const inC = c < numInChannels ? c : 0;
+                output[c][i] = input[inC][i] * curGain;
+            }
+        }
+
+        this.resyncCounter++;
+        if (this.resyncCounter >= 64) {
+            this.resyncCounter = 0;
+            let acc = 0.0;
+            for (let j = 0; j < winSamples; j++) acc += ring[j];
+            runSum = acc;
+        }
+
+        this.currentGain = curGain;
+        this.state = st;
+        this.holdCounter = holdRemaining;
+        this.runningSumSquares = runSum;
+        this.writeIdx = wIdx;
+        this.lastDbfs = blockMaxDbfs;
+
+        this.telemetryCounter++;
+        if (this.telemetryCounter >= this.telemetryIntervalBlocks) {
+            this.telemetryCounter = 0;
+            const stateNames = ['CLOSED', 'ATTACK', 'OPEN', 'HOLD', 'RELEASE'];
+            this.port.postMessage({
+                type: 'telemetry',
+                dbfs: Math.round(blockMaxDbfs * 10) / 10,
+                state: this.enabled ? stateNames[st] : 'BYPASS',
+                gainDb: Math.round(20.0 * Math.log10(Math.max(curGain, epsilon)) * 10) / 10,
+                enabled: this.enabled
+            });
+        }
+        return true;
+    }
+}
+registerProcessor('noise-gate-processor', NoiseGateProcessor);
+`;
 
     const listenBtn = document.getElementById('listen-btn');
     const talkBtn = document.getElementById('talk-btn');
@@ -1564,6 +1898,240 @@ const clientId = randomId(10);
         }
         return silentAudioTrack;
     }
+
+    async function setupNoiseGate(stream) {
+        if (!window.AudioContext && !window.webkitAudioContext) {
+            console.warn('[Audio] Web Audio API unsupported in this browser');
+            updateAudioProcessingUIStatus('Web Audio API unavailable');
+            return null;
+        }
+
+        try {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (!audioContext) {
+                audioContext = new AudioCtx({ sampleRate: 48000 });
+            }
+            if (audioContext.state === 'suspended') {
+                await audioContext.resume();
+            }
+
+            if (!noiseGateNode) {
+                let moduleLoaded = false;
+                try {
+                    await audioContext.audioWorklet.addModule('/noise-gate-processor.js');
+                    moduleLoaded = true;
+                } catch (netErr) {
+                    console.warn('[Audio] Network load of /noise-gate-processor.js failed, using inline blob fallback:', netErr);
+                }
+
+                if (!moduleLoaded) {
+                    const blob = new Blob([NOISE_GATE_PROCESSOR_INLINE], { type: 'application/javascript' });
+                    const blobUrl = URL.createObjectURL(blob);
+                    try {
+                        await audioContext.audioWorklet.addModule(blobUrl);
+                        moduleLoaded = true;
+                    } finally {
+                        URL.revokeObjectURL(blobUrl);
+                    }
+                }
+
+                noiseGateNode = new AudioWorkletNode(audioContext, 'noise-gate-processor');
+                noiseGateNode.port.onmessage = (event) => {
+                    if (event.data && event.data.type === 'telemetry') {
+                        handleGateTelemetry(event.data);
+                    }
+                };
+                noiseGateNode.port.postMessage({ type: 'setParams', ...noiseGateParams });
+            }
+
+            if (micSourceNode) {
+                try { micSourceNode.disconnect(); } catch (e) {}
+            }
+            micSourceNode = audioContext.createMediaStreamSource(stream);
+
+            if (!micDestinationNode) {
+                micDestinationNode = audioContext.createMediaStreamDestination();
+            }
+
+            micSourceNode.connect(noiseGateNode);
+            // CRITICAL: Connect ONLY to micDestinationNode, NEVER to audioContext.destination (avoids PC speaker feedback!)
+            noiseGateNode.connect(micDestinationNode);
+
+            processedMicTrack = micDestinationNode.stream.getAudioTracks()[0];
+            updateAudioProcessingUIStatus('Active (AudioWorklet Hysteresis)');
+            console.log('[Audio] Noise Gate initialized successfully with AudioWorklet');
+            return processedMicTrack;
+        } catch (e) {
+            console.warn('[Audio] AudioWorklet noise gate failed, falling back to raw mic:', e);
+            updateAudioProcessingUIStatus('Fallback to Direct Mic (' + e.message + ')');
+            processedMicTrack = null;
+            return null;
+        }
+    }
+
+    function getAudioTrackToSend() {
+        if (!isTalking) {
+            return getSilentTrack();
+        }
+        if (processedMicTrack) {
+            return processedMicTrack;
+        }
+        return localMicTrack || getSilentTrack();
+    }
+
+    function handleGateTelemetry(data) {
+        if (!data) return;
+        noiseGateLastState = data.state;
+        if (isTalking) {
+            updateGateStatusDisplay(true, data.state, data.gainDb, data.dbfs);
+        }
+    }
+
+    function updateGateStatusDisplay(talking, state, gainDb, dbfs) {
+        const badge = document.getElementById('gate-status-badge');
+        const text = document.getElementById('gate-status-text');
+        if (badge && text) {
+            if (!talking) {
+                text.textContent = 'Gate: Idle';
+                badge.className = 'status-pill';
+            } else {
+                text.textContent = 'Gate: ' + state + (gainDb !== undefined ? ' (' + (gainDb >= 0 ? '+' : '') + gainDb.toFixed(1) + ' dB)' : '');
+                if (state === 'OPEN') {
+                    badge.className = 'status-pill connected';
+                } else if (state === 'ATTACK' || state === 'HOLD' || state === 'RELEASE') {
+                    badge.className = 'status-pill connecting';
+                } else {
+                    badge.className = 'status-pill';
+                }
+            }
+        }
+
+        const statePill = document.getElementById('gate-state-pill');
+        const gainPill = document.getElementById('gate-gain-pill');
+        const meterFill = document.getElementById('gate-meter-fill');
+        const meterText = document.getElementById('gate-meter-text');
+
+        if (statePill) {
+            statePill.textContent = 'State: ' + state;
+            if (state === 'OPEN') {
+                statePill.style.background = 'var(--pill-positive-bg)';
+                statePill.style.color = 'var(--pill-positive-ink)';
+            } else if (state === 'ATTACK' || state === 'HOLD' || state === 'RELEASE') {
+                statePill.style.background = 'var(--pill-warning-bg)';
+                statePill.style.color = 'var(--pill-warning-ink)';
+            } else {
+                statePill.style.background = 'var(--pill-neutral-bg)';
+                statePill.style.color = 'var(--pill-neutral-ink)';
+            }
+        }
+
+        if (gainPill && gainDb !== undefined) {
+            gainPill.textContent = 'Gain: ' + (gainDb >= 0 ? '+' : '') + gainDb.toFixed(1) + ' dB';
+        }
+
+        if (meterFill && dbfs !== undefined) {
+            const pct = Math.max(0, Math.min(100, ((dbfs + 60.0) / 60.0) * 100.0));
+            meterFill.style.width = pct + '%';
+            if (pct > 70) {
+                meterFill.style.background = 'var(--warning)';
+            } else if (pct > 40) {
+                meterFill.style.background = 'var(--positive)';
+            } else {
+                meterFill.style.background = 'var(--accent)';
+            }
+        }
+
+        if (meterText && dbfs !== undefined) {
+            meterText.textContent = (dbfs <= -100 ? '-inf' : dbfs.toFixed(1)) + ' dBFS';
+        }
+    }
+
+    function updateAudioProcessingUIStatus(status) {
+        const el = document.getElementById('gate-pipeline-status');
+        if (el) el.textContent = status;
+    }
+
+    // Window-exposed UI controls
+    window.toggleNoiseGateUI = function() {
+        noiseGateParams.enabled = !noiseGateParams.enabled;
+        if (noiseGateNode) {
+            noiseGateNode.port.postMessage({ type: 'setParams', enabled: noiseGateParams.enabled });
+        }
+        const btn = document.getElementById('gate-toggle-btn');
+        if (btn) {
+            btn.textContent = 'Noise Gate: ' + (noiseGateParams.enabled ? 'ENABLED' : 'BYPASS');
+            btn.style.color = noiseGateParams.enabled ? 'var(--positive)' : 'var(--warning)';
+        }
+        if (!noiseGateParams.enabled) {
+            updateGateStatusDisplay(isTalking, 'BYPASS', 0.0);
+        }
+    };
+
+    window.setGateOpenThresholdUI = function(val) {
+        const num = parseFloat(val);
+        if (isNaN(num)) return;
+        noiseGateParams.openThreshold = num;
+        if (noiseGateParams.openThreshold < noiseGateParams.closeThreshold) {
+            noiseGateParams.closeThreshold = noiseGateParams.openThreshold;
+            const closeSlider = document.getElementById('gate-close-slider');
+            const closeVal = document.getElementById('gate-close-val');
+            if (closeSlider) closeSlider.value = noiseGateParams.closeThreshold;
+            if (closeVal) closeVal.textContent = noiseGateParams.closeThreshold + ' dBFS';
+        }
+        const valEl = document.getElementById('gate-open-val');
+        if (valEl) valEl.textContent = noiseGateParams.openThreshold + ' dBFS';
+        if (noiseGateNode) {
+            noiseGateNode.port.postMessage({ type: 'setParams', openThreshold: noiseGateParams.openThreshold, closeThreshold: noiseGateParams.closeThreshold });
+        }
+    };
+
+    window.setGateCloseThresholdUI = function(val) {
+        const num = parseFloat(val);
+        if (isNaN(num)) return;
+        noiseGateParams.closeThreshold = num;
+        if (noiseGateParams.closeThreshold > noiseGateParams.openThreshold) {
+            noiseGateParams.openThreshold = noiseGateParams.closeThreshold;
+            const openSlider = document.getElementById('gate-open-slider');
+            const openVal = document.getElementById('gate-open-val');
+            if (openSlider) openSlider.value = noiseGateParams.openThreshold;
+            if (openVal) openVal.textContent = noiseGateParams.openThreshold + ' dBFS';
+        }
+        const valEl = document.getElementById('gate-close-val');
+        if (valEl) valEl.textContent = noiseGateParams.closeThreshold + ' dBFS';
+        if (noiseGateNode) {
+            noiseGateNode.port.postMessage({ type: 'setParams', openThreshold: noiseGateParams.openThreshold, closeThreshold: noiseGateParams.closeThreshold });
+        }
+    };
+
+    window.resetGateDefaultsUI = function() {
+        noiseGateParams.enabled = true;
+        noiseGateParams.openThreshold = -32.0;
+        noiseGateParams.closeThreshold = -35.0;
+        noiseGateParams.rmsWindowMs = 20.0;
+        noiseGateParams.attackMs = 5.0;
+        noiseGateParams.holdMs = 200.0;
+        noiseGateParams.releaseMs = 150.0;
+        noiseGateParams.closedGainDb = -35.0;
+
+        if (noiseGateNode) {
+            noiseGateNode.port.postMessage({ type: 'reset' });
+        }
+
+        const btn = document.getElementById('gate-toggle-btn');
+        if (btn) {
+            btn.textContent = 'Noise Gate: ENABLED';
+            btn.style.color = 'var(--positive)';
+        }
+        const openSlider = document.getElementById('gate-open-slider');
+        const openVal = document.getElementById('gate-open-val');
+        if (openSlider) openSlider.value = -32;
+        if (openVal) openVal.textContent = '-32 dBFS';
+
+        const closeSlider = document.getElementById('gate-close-slider');
+        const closeVal = document.getElementById('gate-close-val');
+        if (closeSlider) closeSlider.value = -35;
+        if (closeVal) closeVal.textContent = '-35 dBFS';
+    };
 
     websocket.onopen = () => {
         console.log('[WebRTC] WebSocket connected, requesting offer...');
@@ -1699,7 +2267,7 @@ const clientId = randomId(10);
 
         if (audioTransceiver) {
             audioTransceiver.direction = 'sendrecv';
-            const trackToSend = localMicTrack || getSilentTrack();
+            const trackToSend = isTalking ? getAudioTrackToSend() : getSilentTrack();
             if (trackToSend && audioTransceiver.sender) {
                 try {
                     await audioTransceiver.sender.replaceTrack(trackToSend);
@@ -1750,7 +2318,7 @@ const clientId = randomId(10);
         };
     }
 
-    // --- CALL-APP TALK BUTTON (SEAMLESS MIC TOGGLE - NO ARMED STEP) ---
+    // --- CALL-APP TALK BUTTON (SEAMLESS MIC TOGGLE WITH AUDIO WORKLET NOISE GATE) ---
     async function toggleTalk() {
         if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
             alert('Microphone requires HTTPS with the MaixCAM certificate authority trusted on this device.');
@@ -1762,7 +2330,7 @@ const clientId = randomId(10);
                     audio: {
                         echoCancellation: true,
                         noiseSuppression: true,
-                        autoGainControl: true
+                        autoGainControl: false
                     },
                     video: false
                 });
@@ -1770,8 +2338,13 @@ const clientId = randomId(10);
                 localMicTrack = localStream.getAudioTracks()[0];
                 localMicTrack.enabled = true;
 
-                if (audioTransceiver && audioTransceiver.sender) {
-                    await audioTransceiver.sender.replaceTrack(localMicTrack);
+                await setupNoiseGate(localStream);
+
+                const trackToSend = getAudioTrackToSend();
+                if (trackToSend) trackToSend.enabled = true;
+
+                if (audioTransceiver && audioTransceiver.sender && trackToSend) {
+                    await audioTransceiver.sender.replaceTrack(trackToSend);
                 }
 
                 startTalk();
@@ -1812,14 +2385,21 @@ const clientId = randomId(10);
         if (isTalking) return;
         isTalking = true;
 
-        if (localMicTrack) {
-            localMicTrack.enabled = true;
-            if (audioTransceiver && audioTransceiver.sender) {
-                try {
-                    await audioTransceiver.sender.replaceTrack(localMicTrack);
-                } catch (e) {
-                    console.warn('[Audio] replaceTrack to mic error:', e);
-                }
+        if (audioContext && audioContext.state === 'suspended') {
+            try { await audioContext.resume(); } catch (e) {}
+        }
+
+        if (localMicTrack) localMicTrack.enabled = true;
+        if (processedMicTrack) processedMicTrack.enabled = true;
+
+        const trackToSend = getAudioTrackToSend();
+        if (trackToSend) trackToSend.enabled = true;
+
+        if (audioTransceiver && audioTransceiver.sender && trackToSend) {
+            try {
+                await audioTransceiver.sender.replaceTrack(trackToSend);
+            } catch (e) {
+                console.warn('[Audio] replaceTrack to mic error:', e);
             }
         }
 
@@ -1829,6 +2409,7 @@ const clientId = randomId(10);
             talkBtn.title = 'Mute Mic (Transmitting to Headset)';
         }
 
+        updateGateStatusDisplay(true, noiseGateLastState);
         notifyTalkState(true);
     }
 
@@ -1836,6 +2417,9 @@ const clientId = randomId(10);
         if (!isTalking) return;
         isTalking = false;
 
+        if (processedMicTrack) {
+            processedMicTrack.enabled = false;
+        }
         if (localMicTrack) {
             localMicTrack.enabled = false;
         }
@@ -1855,6 +2439,7 @@ const clientId = randomId(10);
             talkBtn.title = 'Unmute Mic (Talk to Headset)';
         }
 
+        updateGateStatusDisplay(false, 'Idle');
         notifyTalkState(false);
     }
 
@@ -1923,6 +2508,290 @@ const clientId = randomId(10);
 
 )JS";
 
+    static constexpr const char WEBRTC_NOISE_GATE_PROCESSOR_JS[] = R"JS(
+/**
+ * NoiseGateProcessor - Real-time AudioWorkletProcessor for PC -> MaixCAM audio uplink.
+ *
+ * Implements:
+ * - Real-time RMS calculation over a sliding 20 ms window
+ * - Hysteresis state machine: CLOSED -> ATTACK -> OPEN -> HOLD -> RELEASE -> CLOSED
+ * - Default parameters:
+ *     Open Threshold:  -32 dBFS
+ *     Close Threshold: -35 dBFS
+ *     RMS Window:      20 ms
+ *     Attack:          5 ms
+ *     Hold:            200 ms
+ *     Release:         150 ms
+ *     Closed Gain:     -35 dB (attenuation ~0.0178x, continuous audio preserved)
+ * - Sample-rate aware linear gain smoothing
+ * - Bounded, zero-allocation real-time process() loop
+ * - Safe multi-channel support and throttled main-thread telemetry
+ */
+
+class NoiseGateProcessor extends AudioWorkletProcessor {
+    constructor(options) {
+        super(options);
+
+        // Configurable parameters with required defaults
+        this.enabled = true;
+        this.openThreshold = -32.0;    // dBFS
+        this.closeThreshold = -35.0;   // dBFS
+        this.rmsWindowMs = 20.0;       // ms
+        this.attackMs = 5.0;           // ms
+        this.holdMs = 200.0;           // ms
+        this.releaseMs = 150.0;        // ms
+        this.closedGainDb = -35.0;     // dB
+
+        // Pre-computed gain values
+        this.closedGainLinear = Math.pow(10.0, this.closedGainDb / 20.0);
+        this.currentGain = this.closedGainLinear;
+
+        // State Machine constants
+        this.STATE_CLOSED = 0;
+        this.STATE_ATTACK = 1;
+        this.STATE_OPEN = 2;
+        this.STATE_HOLD = 3;
+        this.STATE_RELEASE = 4;
+        this.state = this.STATE_CLOSED;
+
+        // Timing / countdown counters
+        this.holdCounter = 0;
+
+        // Pre-allocated ring buffer for RMS sliding window calculation
+        // 4096 samples supports up to 96 kHz at 40 ms window without reallocations
+        this.maxWindowSamples = 4096;
+        this.ringBuffer = new Float32Array(this.maxWindowSamples);
+        this.windowSamples = Math.max(1, Math.min(this.maxWindowSamples, Math.round(sampleRate * (this.rmsWindowMs / 1000.0))));
+        this.writeIdx = 0;
+        this.runningSumSquares = 0.0;
+        this.resyncCounter = 0;
+
+        // Main-thread telemetry throttling (~80-100 ms interval)
+        this.telemetryCounter = 0;
+        this.telemetryIntervalBlocks = Math.max(1, Math.round((sampleRate * 0.08) / 128.0));
+        this.lastDbfs = -140.0;
+
+        // Handle control messages from main thread
+        this.port.onmessage = (e) => {
+            const data = e.data;
+            if (!data) return;
+            if (data.type === 'setParams') {
+                if (typeof data.enabled === 'boolean') this.enabled = data.enabled;
+                if (typeof data.openThreshold === 'number') this.openThreshold = data.openThreshold;
+                if (typeof data.closeThreshold === 'number') this.closeThreshold = data.closeThreshold;
+                if (typeof data.attackMs === 'number') this.attackMs = data.attackMs;
+                if (typeof data.holdMs === 'number') this.holdMs = data.holdMs;
+                if (typeof data.releaseMs === 'number') this.releaseMs = data.releaseMs;
+                if (typeof data.closedGainDb === 'number') {
+                    this.closedGainDb = data.closedGainDb;
+                    this.closedGainLinear = Math.pow(10.0, this.closedGainDb / 20.0);
+                }
+                if (typeof data.rmsWindowMs === 'number') {
+                    this.rmsWindowMs = data.rmsWindowMs;
+                    this.updateWindowSize();
+                }
+            } else if (data.type === 'reset') {
+                this.enabled = true;
+                this.openThreshold = -32.0;
+                this.closeThreshold = -35.0;
+                this.attackMs = 5.0;
+                this.holdMs = 200.0;
+                this.releaseMs = 150.0;
+                this.closedGainDb = -35.0;
+                this.closedGainLinear = Math.pow(10.0, -35.0 / 20.0);
+                this.rmsWindowMs = 20.0;
+                this.updateWindowSize();
+            }
+        };
+    }
+
+    updateWindowSize() {
+        const newSize = Math.max(1, Math.min(this.maxWindowSamples, Math.round(sampleRate * (this.rmsWindowMs / 1000.0))));
+        if (newSize !== this.windowSamples) {
+            this.ringBuffer.fill(0);
+            this.writeIdx = 0;
+            this.runningSumSquares = 0.0;
+            this.windowSamples = newSize;
+        }
+    }
+
+    process(inputs, outputs, parameters) {
+        const input = inputs[0];
+        const output = outputs[0];
+
+        if (!output || output.length === 0) return true;
+
+        const numOutChannels = output.length;
+        const outSamples = output[0].length;
+
+        // If no microphone input is active, output continuous zero/silence
+        if (!input || input.length === 0 || !input[0] || input[0].length === 0) {
+            for (let c = 0; c < numOutChannels; c++) {
+                output[c].fill(0);
+            }
+            return true;
+        }
+
+        const numInChannels = input.length;
+        const numSamples = Math.min(input[0].length, outSamples);
+
+        // Precalculate ramp rates based on sample rate
+        const attackSamples = Math.max(1, Math.round(sampleRate * (this.attackMs / 1000.0)));
+        const releaseSamples = Math.max(1, Math.round(sampleRate * (this.releaseMs / 1000.0)));
+        const holdSamplesTotal = Math.max(1, Math.round(sampleRate * (this.holdMs / 1000.0)));
+
+        const attackStep = (1.0 - this.closedGainLinear) / attackSamples;
+        const releaseStep = (1.0 - this.closedGainLinear) / releaseSamples;
+
+        const epsilon = 1e-7; // -140 dBFS floor
+        const invInChannels = 1.0 / numInChannels;
+        const winSamples = this.windowSamples;
+        const ring = this.ringBuffer;
+
+        let curGain = this.currentGain;
+        let st = this.state;
+        let holdRemaining = this.holdCounter;
+        let runSum = this.runningSumSquares;
+        let wIdx = this.writeIdx;
+
+        let blockMaxDbfs = -140.0;
+
+        for (let i = 0; i < numSamples; i++) {
+            // 1. Multi-channel mean square of current sample
+            let sampleSqSum = 0.0;
+            for (let c = 0; c < numInChannels; c++) {
+                const s = input[c][i];
+                sampleSqSum += s * s;
+            }
+            const currentSq = sampleSqSum * invInChannels;
+
+            // 2. Sliding circular buffer update
+            const oldSq = ring[wIdx];
+            ring[wIdx] = currentSq;
+            runSum += currentSq - oldSq;
+            wIdx++;
+            if (wIdx >= winSamples) {
+                wIdx = 0;
+            }
+
+            // 3. RMS & dBFS calculation
+            let meanSq = runSum / winSamples;
+            if (meanSq < 0.0) meanSq = 0.0;
+            const rms = Math.sqrt(meanSq);
+            const dbfs = 20.0 * Math.log10(rms > epsilon ? rms : epsilon);
+
+            if (dbfs > blockMaxDbfs) {
+                blockMaxDbfs = dbfs;
+            }
+
+            // 4. State Machine / Gain computation
+            if (!this.enabled) {
+                // If bypassed, smoothly ramp gain to 1.0 (anti-click)
+                if (curGain < 1.0) {
+                    curGain += attackStep;
+                    if (curGain > 1.0) curGain = 1.0;
+                } else if (curGain > 1.0) {
+                    curGain = 1.0;
+                }
+                st = this.STATE_OPEN;
+            } else {
+                switch (st) {
+                    case this.STATE_CLOSED:
+                        curGain = this.closedGainLinear;
+                        if (dbfs >= this.openThreshold) {
+                            st = this.STATE_ATTACK;
+                        }
+                        break;
+
+                    case this.STATE_ATTACK:
+                        curGain += attackStep;
+                        if (curGain >= 1.0) {
+                            curGain = 1.0;
+                            st = this.STATE_OPEN;
+                        }
+                        break;
+
+                    case this.STATE_OPEN:
+                        curGain = 1.0;
+                        if (dbfs < this.closeThreshold) {
+                            st = this.STATE_HOLD;
+                            holdRemaining = holdSamplesTotal;
+                        }
+                        break;
+
+                    case this.STATE_HOLD:
+                        curGain = 1.0;
+                        if (dbfs >= this.closeThreshold) {
+                            st = this.STATE_OPEN;
+                        } else {
+                            holdRemaining--;
+                            if (holdRemaining <= 0) {
+                                st = this.STATE_RELEASE;
+                            }
+                        }
+                        break;
+
+                    case this.STATE_RELEASE:
+                        if (dbfs >= this.openThreshold) {
+                            st = this.STATE_ATTACK;
+                        } else {
+                            curGain -= releaseStep;
+                            if (curGain <= this.closedGainLinear) {
+                                curGain = this.closedGainLinear;
+                                st = this.STATE_CLOSED;
+                            }
+                        }
+                        break;
+                }
+            }
+
+            // 5. Apply smoothed gain to output channels
+            for (let c = 0; c < numOutChannels; c++) {
+                const inC = c < numInChannels ? c : 0;
+                output[c][i] = input[inC][i] * curGain;
+            }
+        }
+
+        // Periodic resync of running sum to eliminate float drift
+        this.resyncCounter++;
+        if (this.resyncCounter >= 64) {
+            this.resyncCounter = 0;
+            let acc = 0.0;
+            for (let j = 0; j < winSamples; j++) {
+                acc += ring[j];
+            }
+            runSum = acc;
+        }
+
+        this.currentGain = curGain;
+        this.state = st;
+        this.holdCounter = holdRemaining;
+        this.runningSumSquares = runSum;
+        this.writeIdx = wIdx;
+        this.lastDbfs = blockMaxDbfs;
+
+        // Throttled telemetry reporting to main thread
+        this.telemetryCounter++;
+        if (this.telemetryCounter >= this.telemetryIntervalBlocks) {
+            this.telemetryCounter = 0;
+            const stateNames = ['CLOSED', 'ATTACK', 'OPEN', 'HOLD', 'RELEASE'];
+            this.port.postMessage({
+                type: 'telemetry',
+                dbfs: Math.round(blockMaxDbfs * 10) / 10,
+                state: this.enabled ? stateNames[st] : 'BYPASS',
+                gainDb: Math.round(20.0 * Math.log10(Math.max(curGain, epsilon)) * 10) / 10,
+                enabled: this.enabled
+            });
+        }
+
+        return true;
+    }
+}
+
+registerProcessor('noise-gate-processor', NoiseGateProcessor);
+
+)JS";
+
 public:
     MaixWebRTCHttpServer(const std::string &host = "0.0.0.0", uint16_t port = 8080,
                          const std::string &stun_server = "stun:stun.l.google.com:19302",
@@ -1987,6 +2856,10 @@ public:
             pos = js_content.find(marker);
             if (pos != std::string::npos) js_content.replace(pos, marker.size(), token ? token : "");
             res.set_content(js_content, "application/javascript; charset=utf-8");
+        });
+
+        _server->Get("/noise-gate-processor.js", [](const httplib::Request& req, httplib::Response& res) {
+            res.set_content(WEBRTC_NOISE_GATE_PROCESSOR_JS, "application/javascript; charset=utf-8");
         });
 
         _server->Get("/api/audio_stats", [this](const httplib::Request& req, httplib::Response& res) {
