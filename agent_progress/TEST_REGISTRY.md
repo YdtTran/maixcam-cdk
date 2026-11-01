@@ -28,3 +28,24 @@
 | HFP active audio path | NOT VERIFIED in original/runtime; only A2DP source found | AUDIT.md |
 
 Paths in Evidence column are under `agent_progress/standalone/evidence` unless a handoff is named. Historical failed/discarded tests are retained without being counted as final successes. No test result is inferred from a build/process exit alone. Persistent target artifacts live under `/root/maixcam-tests/standalone-web`.
+
+| Recording follow-up | Outcome | Evidence |
+|---|---|---|
+| Encoded/decoded video at 0/90/180/270 | PASS, real Chromium recording with synthetic media | recording-rotation/result.json |
+| Rotation while recording, fixed dimensions and no additional crop | PASS, decoded final frame and margins | recording-rotation/result.json; rotation-mid-record.webm |
+| Audio tracks, audio-only mode, codec fallback, owned-track cleanup | PASS | recording-rotation/result.json; probe-90.json |
+| Physical camera saved-clip review | Operator spot-check pending | RECORDING_HANDOFF.md |
+
+| Preview follow-up | Outcome | Evidence |
+|---|---|---|
+| Actual inline preview pixels/dimensions for 0/90/180/270 | PASS, Chromium with real encoded synthetic clips | recording-rotation/result.json |
+| Audio-only preview, replay video from another row, delete/revoke current clip | PASS | recording-preview-test.txt |
+| Missing file reports error without synthesized tone; buttons fit sidebar | PASS | recording-preview-test.txt; preview-video-90.png |
+
+| Persistence follow-up | Outcome | Evidence |
+|---|---|---|
+| Actual encoded video/audio survive F5 and browser process restart | PASS, same Chromium disk profile | recording-persistence/result.json |
+| Restored 90-degree preview and download SHA-256 equality | PASS | recording-persistence/result.json; preview-after-refresh.png |
+| Persistent delete stays deleted after F5 | PASS | recording-persistence/result.json |
+| Injected quota failure retains downloadable unsaved clip and navigation warning | PASS | recording-persistence/result.json |
+| Injected persistent-delete failure retains saved object/UI | PASS | recording-persistence/result.json |

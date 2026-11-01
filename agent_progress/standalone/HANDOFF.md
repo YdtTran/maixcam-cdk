@@ -1,5 +1,7 @@
 # Standalone MaixCAM final handoff
 
+Follow-ups RC-01/RC-02/RC-03 record the displayed rotation, provide real video preview, and retain recordings across F5/browser restart in IndexedDB; current release `/root/maixcam-standalone-20261101-034054-810730ff`. See [recording handoff](RECORDING_HANDOFF.md), [preview handoff](PREVIEW_HANDOFF.md), and [persistence handoff](PERSISTENCE_HANDOFF.md). The original acceptance/release details below remain historical.
+
 The product implementation is deployed and running. MaixCAM itself hosts the AP, DHCP/DNS, complete embedded UI, HTTPS/WSS signaling and original native DTLS-SRTP media pipeline. The operator confirmed video and bidirectional audio. **Controlled long-duration quantitative acceptance is not claimed. Private-CA browser trust without warnings is operator-confirmed.**
 
 ## Final operator choices and access

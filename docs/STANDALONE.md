@@ -131,3 +131,32 @@ That stops standalone services, removes newly created managed paths, restores th
 Read `agent_progress/standalone/HANDOFF.md` for actual test outcomes. AP initialization, HTTPS/WSS health, boot/process recovery and controller-level Bluetooth reconnection are separate from AP-client DHCP, browser secure-context/microphone interaction and full media/coexistence testing. Do not mark the latter complete based on process existence or counters alone. The audited runtime advertises headset HFP capability but runs BlueALSA with A2DP source; no active HFP audio path was found or newly implemented.
 
 Reference behavior: browser microphone access requires a [secure context (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia). The native WebSocket server's callback timing was checked against the [libdatachannel 0.24 server implementation](https://github.com/paullouisageneau/libdatachannel/blob/v0.24.0/src/impl/websocketserver.cpp); pending public sockets must be retained until the TLS/HTTP handshake finishes.
+
+## Record the displayed camera view
+
+Video recording now captures the composed display canvas, so the saved clip includes the existing mounting orientation and manual 0/90/180/270-degree view rotation. Rotate before recording to choose the clip's initial landscape/portrait dimensions. Rotating during recording updates the saved picture too; the file keeps its initial dimensions and fits the new orientation with black margins when needed, without an additional crop. The existing audio tracks are retained. Audio-only recording stays audio-only, and stopping recording releases only its canvas capture track, not the live WebRTC tracks.
+
+This composition and recording run on the browser. No extra MaixCAM encoder, audio filter or Bluetooth path is introduced. Refresh the UI after deploying the change. Browser coverage was exercised with Chromium using actual encoded/decoded recordings; other browsers still depend on their supported MediaRecorder formats.
+
+Host regression command (requires Playwright and FFmpeg):
+
+```sh
+build/standalone-venv/bin/pip install playwright
+build/standalone-venv/bin/python scripts/tests/test_recording_rotation.py \
+    --chromium /path/to/chromium
+```
+
+The test uses synthetic video/audio and writes persistent clips/results to `agent_progress/standalone/evidence/recording-rotation`. It verifies saved-frame colors and dimensions at all four angles, a rotation during recording, codec fallback, audio-only mode and capture cleanup. It does not claim that a physical camera recording was manually reviewed.
+
+The records preview supports video and audio: video clips open in an inline video player with controls, while audio-only recordings use the audio player. Stopping a new recording opens its local Blob URL directly; each new row has a Preview button for replay. Missing/unsupported files report an error instead of playing a synthesized demo tone. Deleting the current recording stops its preview and revokes its Blob URL. Completed recordings are saved in this browser and restored after refresh/reopening. Wait for the Saved status before refreshing. Downloading remains available as a separate backup.
+
+
+## Keep recordings after refresh
+
+Completed recordings are stored as Blobs plus metadata in IndexedDB on the PC/phone browser. Each row shows Saving… until its write transaction commits, then Saved. Refresh/reopening the same browser profile at the **same URL origin** restores the list, video/audio preview and downloadable bytes. New Blob URLs are created from the stored files, rather than trying to reuse expired in-memory URLs. Deleting a recording removes it from storage before removing its row, so it stays deleted after refresh.
+
+The camera does not store or upload these clips. `https://192.168.4.1:8000` and `https://maixcam.home.arpa:8000` have separate browser storage; use the same address to see the same recordings. Other devices/profiles do not share recordings. Clearing site data removes them; private-mode retention is controlled by the browser. Persistent-storage permission is requested when recording starts, but browsers can deny it, so keep important exports separately. See [IndexedDB](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API/Using_IndexedDB) and [browser quota/eviction behavior](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria).
+
+If saving fails or storage fills, the clip stays available for preview/download with an explicit Not saved status; it is not presented as durable. The page warns before leaving while recording, saving, deleting or holding an unsaved clip. Stop recording and wait for Saved before F5. Existing clips recorded by the old page-only version cannot be recovered after they have already been discarded; the operator confirmed none needed preservation before this deployment.
+
+Regression: `scripts/tests/test_recording_persistence.py --chromium /path/to/chromium` under the host Playwright environment. It records encoded video/audio, refreshes, restarts Chromium with the same disk profile, checks restored portrait preview and downloaded SHA-256, verifies deletion survives refresh, and injects quota/delete failures to verify honest recovery UI. It does not fill the actual host disk or claim recovery from deliberate site-data removal or forced reload during an unfinished recording.

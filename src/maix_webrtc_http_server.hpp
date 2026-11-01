@@ -527,6 +527,8 @@ private:
             background: rgba(255, 255, 255, 0.02);
         }
 
+        .record-filename { overflow-wrap: anywhere; }
+
         .record-tag {
             display: inline-block;
             font-size: 10px;
@@ -555,6 +557,7 @@ private:
 
         .table-actions {
             display: flex;
+            flex-wrap: wrap;
             align-items: center;
             gap: 6px;
         }
@@ -615,6 +618,13 @@ private:
         .player-meta {
             font-size: 11px;
             color: var(--muted);
+        }
+
+        video#vault-video {
+            width: 100%;
+            max-height: 200px;
+            object-fit: contain;
+            background: #000;
         }
 
         audio#vault-audio {
@@ -798,6 +808,7 @@ private:
                         </div>
                     </div>
 
+                    <div id="record-storage-status" role="status" style="padding:6px 14px;font-size:11px;color:var(--muted)">Loading saved recordings…</div>
                     <div class="records-table-wrap">
                         <table class="records-table">
                             <thead>
@@ -907,6 +918,7 @@ private:
                             <span id="now-playing-title" class="player-title">Select a record to play</span>
                             <span id="now-playing-meta" class="player-meta tabular">Ready</span>
                         </div>
+                        <video id="vault-video" controls playsinline preload="none" hidden></video>
                         <audio id="vault-audio" controls preload="none"></audio>
                     </div>
                 </div>
@@ -985,6 +997,30 @@ private:
         // Canonical default camera mounting orientation (270 deg CW = 90 deg CCW)
         const BASE_ROTATION = 270;
         let canvasPainter = null;
+        let recordingCanvas = null;
+        let recordingCanvasStream = null;
+
+        function drawRecordingFrame(displayCanvas) {
+            if (!recordingCanvas || !displayCanvas.width || !displayCanvas.height) return;
+            const ctx = recordingCanvas.getContext('2d', { alpha: false });
+            const scale = Math.min(recordingCanvas.width / displayCanvas.width,
+                                   recordingCanvas.height / displayCanvas.height);
+            const width = displayCanvas.width * scale;
+            const height = displayCanvas.height * scale;
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, recordingCanvas.width, recordingCanvas.height);
+            ctx.drawImage(displayCanvas, (recordingCanvas.width - width) / 2,
+                          (recordingCanvas.height - height) / 2, width, height);
+        }
+
+        function releaseRecordingCapture() {
+            // Stop only the canvas tracks we own, never shared WebRTC audio.
+            if (recordingCanvasStream) {
+                recordingCanvasStream.getTracks().forEach(track => track.stop());
+            }
+            recordingCanvasStream = null;
+            recordingCanvas = null;
+        }
         let currentRotation = 0;
 
         try {
@@ -1024,6 +1060,7 @@ private:
                 ctx.scale(scale, scale);
                 ctx.drawImage(video, -video.videoWidth / 2, -video.videoHeight / 2);
                 ctx.restore();
+                drawRecordingFrame(canvas);
             };
 
             const loop = () => {
@@ -1107,48 +1144,191 @@ private:
             }
         }
 
-        function playRecord(filename, title, meta) {
-            const player = document.getElementById('vault-audio');
-            const titleElem = document.getElementById('now-playing-title');
-            const metaElem = document.getElementById('now-playing-meta');
+        const localRecordings = new Map();
+        let playingRecord = null;
 
-            titleElem.textContent = title;
+        function playRecord(filename, title, meta) {
+            const videoPlayer = document.getElementById('vault-video');
+            const audioPlayer = document.getElementById('vault-audio');
+            const recording = localRecordings.get(filename);
+            const isVideo = recording ? recording.isVideo : /\.(mp4|webm|mkv)$/i.test(filename);
+            const player = isVideo ? videoPlayer : audioPlayer;
+            const source = recording ? recording.url : `/recordings/${filename}`;
+            playingRecord = filename;
+            for (const element of [videoPlayer, audioPlayer]) {
+                element.pause();
+                element.hidden = element !== player;
+                element.removeAttribute('src');
+                element.load();
+            }
+            document.getElementById('now-playing-title').textContent = title;
+            const metaElem = document.getElementById('now-playing-meta');
             metaElem.textContent = meta;
-            player.src = `/recordings/${filename}`;
-            player.play().catch(() => {
-                synthesizeDemoAudio(title);
+            player.onerror = () => {
+                if (playingRecord === filename) metaElem.textContent = 'Preview unavailable: file missing or unsupported format.';
+            };
+            player.src = source;
+            player.play().catch(error => {
+                if (playingRecord !== filename || error.name === 'AbortError') return;
+                metaElem.textContent = error.name === 'NotAllowedError'
+                    ? 'Press Play to preview this recording.'
+                    : 'Preview unavailable: file missing or unsupported format.';
             });
         }
 
-        function deleteRecord(btn, filename) {
-            const row = btn.closest('tr');
-            if (row) {
-                row.remove();
+        let recordingDatabasePromise = null;
+        let pendingRecordingWrites = 0;
+        let persistentStorageRequested = false;
+
+        function openRecordingDatabase() {
+            if (!recordingDatabasePromise) {
+                recordingDatabasePromise = new Promise((resolve, reject) => {
+                    const request = indexedDB.open('maixcam-recordings', 1);
+                    request.onupgradeneeded = () => {
+                        request.result.createObjectStore('recordings', { keyPath: 'filename' });
+                    };
+                    request.onsuccess = () => {
+                        const database = request.result;
+                        database.onversionchange = () => database.close();
+                        resolve(database);
+                    };
+                    request.onerror = () => reject(request.error);
+                    request.onblocked = () => reject(new Error('Close other camera tabs and try again.'));
+                });
             }
-            const player = document.getElementById('vault-audio');
-            if (player.src && player.src.includes(filename)) {
-                player.pause();
-                player.src = '';
-                document.getElementById('now-playing-title').textContent = 'Select a record to play';
-                document.getElementById('now-playing-meta').textContent = 'Ready';
+            return recordingDatabasePromise;
+        }
+
+        async function recordingStoreOperation(mode, operation) {
+            const database = await openRecordingDatabase();
+            return new Promise((resolve, reject) => {
+                const transaction = database.transaction('recordings', mode);
+                const request = operation(transaction.objectStore('recordings'));
+                let result;
+                request.onsuccess = () => { result = request.result; };
+                // Only report success after the write transaction has committed.
+                transaction.oncomplete = () => resolve(result);
+                transaction.onabort = () => reject(transaction.error || request.error || new Error('Storage transaction aborted'));
+                transaction.onerror = () => reject(transaction.error || request.error);
+            });
+        }
+
+        function recordingStorageStatus(message) {
+            document.getElementById('record-storage-status').textContent = message;
+        }
+
+        function updateRecordingCount() {
+            const saved = [...localRecordings.values()].filter(record => record.persisted).length;
+            recordingStorageStatus(`${saved} saved recording(s) on this browser. Kept after refresh.`);
+        }
+
+        function addRecording(record, persisted = false) {
+            if (localRecordings.has(record.filename)) return localRecordings.get(record.filename);
+            const entry = { ...record, persisted, url: URL.createObjectURL(record.blob) };
+            localRecordings.set(record.filename, entry);
+            const row = document.createElement('tr');
+            row.className = 'local-recording-row';
+            row.innerHTML = `
+                <td><div class="record-filename" style="font-weight:600"></div>
+                    <span class="record-tag tag-video"></span><div class="record-save-state" style="font-size:10px"></div></td>
+                <td class="record-meta tabular"></td>
+                <td><div class="table-actions">
+                    <button type="button" class="btn-action-sm btn-record-preview">Preview</button>
+                    <a class="btn-action-sm record-download">Download</a>
+                    <button type="button" class="btn-action-sm btn-action-del" title="Delete recording">Delete</button>
+                </div></td>`;
+            row.querySelector('.record-filename').textContent = record.filename;
+            row.querySelector('.record-tag').textContent = record.isVideo ? `${record.format.toUpperCase()} Video` : 'Audio Stream';
+            row.querySelector('.record-meta').textContent = `${record.seconds}s · ${record.format.toUpperCase()}`;
+            row.querySelector('.record-save-state').textContent = persisted ? 'Saved' : 'Saving…';
+            const download = row.querySelector('.record-download');
+            download.href = entry.url;
+            download.download = record.filename;
+            row.querySelector('.btn-record-preview').onclick = () => playRecord(record.filename, `Recorded: ${record.filename}`,
+                `${record.seconds}s · ${(record.blob.size / (1024 * 1024)).toFixed(2)} MB (${record.format.toUpperCase()})`);
+            row.querySelector('.btn-action-del').onclick = event => deleteRecord(event.currentTarget, record.filename);
+            entry.row = row;
+            document.getElementById('records-table-body').prepend(row);
+            return entry;
+        }
+
+        async function restoreRecordings() {
+            try {
+                const records = await recordingStoreOperation('readonly', store => store.getAll());
+                records.sort((a, b) => a.createdAt - b.createdAt);
+                for (const record of records) {
+                    if (record.blob instanceof Blob) addRecording(record, true);
+                }
+                updateRecordingCount();
+            } catch (error) {
+                recordingStorageStatus('Browser storage unavailable. Download recordings before refreshing.');
+                console.warn('[Recordings] Restore failed:', error);
             }
         }
 
-        function synthesizeDemoAudio(label) {
-            const ctx = new (window.AudioContext || window.webkitAudioContext)();
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.type = 'sine';
-            osc.frequency.setValueAtTime(440, ctx.currentTime);
-            gain.gain.setValueAtTime(0.2, ctx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1.5);
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            osc.start();
-            osc.stop(ctx.currentTime + 1.5);
-            const metaElem = document.getElementById('now-playing-meta');
-            metaElem.textContent = 'Playing synthesized preview tone';
+        const recordingsReady = restoreRecordings();
+
+        async function saveRecording(record, entry) {
+            pendingRecordingWrites++;
+            try {
+                await recordingsReady;
+                await recordingStoreOperation('readwrite', store => store.put(record));
+                entry.persisted = true;
+                entry.row.querySelector('.record-save-state').textContent = 'Saved';
+                updateRecordingCount();
+            } catch (error) {
+                entry.row.querySelector('.record-save-state').textContent = 'Not saved — download before refresh';
+                recordingStorageStatus(error?.name === 'QuotaExceededError'
+                    ? 'Storage full. Download this recording or delete older recordings.'
+                    : 'Could not save. Download this recording before refreshing.');
+                console.warn('[Recordings] Save failed:', error);
+            } finally {
+                pendingRecordingWrites--;
+            }
         }
+
+        async function deleteRecord(btn, filename) {
+            const recording = localRecordings.get(filename);
+            btn.disabled = true;
+            pendingRecordingWrites++;
+            try {
+                if (recording?.savePromise) await recording.savePromise;
+                if (recording?.persisted) {
+                    await recordingStoreOperation('readwrite', store => store.delete(filename));
+                }
+                if (playingRecord === filename) {
+                    for (const id of ['vault-video', 'vault-audio']) {
+                        const player = document.getElementById(id);
+                        player.pause();
+                        player.removeAttribute('src');
+                        player.load();
+                        player.hidden = id === 'vault-video';
+                    }
+                    playingRecord = null;
+                    document.getElementById('now-playing-title').textContent = 'Select a record to play';
+                    document.getElementById('now-playing-meta').textContent = 'Ready';
+                }
+                btn.closest('tr')?.remove();
+                if (recording) {
+                    URL.revokeObjectURL(recording.url);
+                    localRecordings.delete(filename);
+                }
+                updateRecordingCount();
+            } catch (error) {
+                recordingStorageStatus('Could not delete recording. Try again.');
+                console.warn('[Recordings] Delete failed:', error);
+            } finally {
+                btn.disabled = false;
+                pendingRecordingWrites--;
+            }
+        }
+
+        window.addEventListener('beforeunload', event => {
+            if (mediaRecorder || pendingRecordingWrites || [...localRecordings.values()].some(record => !record.persisted)) {
+                event.preventDefault();
+                event.returnValue = '';
+            }
+        });
 
         let mediaRecorder = null;
         let recordedChunks = [];
@@ -1157,14 +1337,18 @@ private:
         let currentRecordedFormat = 'mp4';
 
         function toggleSessionRecording() {
-            if (mediaRecorder && mediaRecorder.state === 'recording') {
-                stopSessionRecording();
-            } else {
-                startSessionRecording();
+            if (mediaRecorder) {
+                if (mediaRecorder.state === 'recording') stopSessionRecording();
+                return;
             }
+            startSessionRecording();
         }
 
         function startSessionRecording() {
+            if (!persistentStorageRequested && navigator.storage?.persist) {
+                persistentStorageRequested = true;
+                navigator.storage.persist().catch(() => {});
+            }
             const videoElem = document.getElementById('video');
             if (!videoElem.srcObject) {
                 alert('Stream not available yet for recording.');
@@ -1207,20 +1391,43 @@ private:
 
             currentRecordedFormat = ext;
 
+            let streamToRecord;
             try {
-                let streamToRecord = videoElem.srcObject;
+                const audioTracks = videoElem.srcObject.getAudioTracks();
                 if (chosenFormat === 'wav') {
-                    const audioTracks = streamToRecord.getAudioTracks();
-                    if (audioTracks.length > 0) {
-                        streamToRecord = new MediaStream(audioTracks);
+                    streamToRecord = new MediaStream(audioTracks);
+                } else {
+                    const displayCanvas = document.getElementById('video-canvas');
+                    if (videoElem.readyState < 2 || !displayCanvas?.width || !displayCanvas?.height) {
+                        throw new Error('Wait for the video to appear before recording.');
                     }
+                    // Use the exact displayed pixels, including the mounting and
+                    // manual rotations. Keep the encoder dimensions fixed if the
+                    // view changes between portrait and landscape mid-recording.
+                    recordingCanvas = document.createElement('canvas');
+                    recordingCanvas.width = displayCanvas.width;
+                    recordingCanvas.height = displayCanvas.height;
+                    drawRecordingFrame(displayCanvas);
+                    recordingCanvasStream = recordingCanvas.captureStream(30);
+                    streamToRecord = new MediaStream([
+                        ...recordingCanvasStream.getVideoTracks(), ...audioTracks
+                    ]);
                 }
+            } catch (err) {
+                releaseRecordingCapture();
+                alert('Recording unavailable: ' + err.message);
+                return;
+            }
+
+            try {
                 mediaRecorder = mimeType ? new MediaRecorder(streamToRecord, { mimeType }) : new MediaRecorder(streamToRecord);
             } catch (err) {
                 try {
-                    mediaRecorder = new MediaRecorder(videoElem.srcObject);
+                    // Codec fallback must retain the rotated canvas source.
+                    mediaRecorder = new MediaRecorder(streamToRecord);
                     currentRecordedFormat = 'webm';
                 } catch (e2) {
+                    releaseRecordingCapture();
                     alert('MediaRecorder error: ' + e2.message);
                     return;
                 }
@@ -1233,39 +1440,27 @@ private:
             mediaRecorder.onstop = () => {
                 const actualMime = mediaRecorder.mimeType || (currentRecordedFormat === 'mp4' ? 'video/mp4' : 'video/webm');
                 const blob = new Blob(recordedChunks, { type: actualMime });
-                const url = URL.createObjectURL(blob);
-                const sizeMB = (blob.size / (1024 * 1024)).toFixed(2);
-                const timestamp = new Date().toISOString().substring(11, 19).replace(/:/g, '');
-                const filename = `session_${timestamp}.${currentRecordedFormat}`;
-                const tagLabel = currentRecordedFormat === 'mp4' ? 'MP4 Video' : (chosenFormat === 'wav' ? 'Audio Stream' : 'WebM Video');
-
-                const tbody = document.getElementById('records-table-body');
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>
-                        <div style="font-weight:600;">${filename}</div>
-                        <span class="record-tag tag-video">${tagLabel}</span>
-                    </td>
-                    <td class="tabular">${recordSeconds}s · ${currentRecordedFormat.toUpperCase()}</td>
-                    <td>
-                        <div class="table-actions">
-                            <a href="${url}" download="${filename}" class="btn-action-sm" title="Download ${currentRecordedFormat.toUpperCase()} file">
-                                <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
-                                <span>${currentRecordedFormat.toUpperCase()}</span>
-                            </a>
-                            <button class="btn-action-sm btn-action-del" onclick="deleteRecord(this, '${filename}')" title="Delete recording">
-                                <svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-                            </button>
-                        </div>
-                    </td>
-                `;
-                tbody.prepend(row);
-                playRecord(filename, `Recorded: ${filename}`, `${recordSeconds}s · ${sizeMB} MB (${currentRecordedFormat.toUpperCase()})`);
-                document.getElementById('vault-audio').src = url;
-                document.getElementById('vault-audio').play().catch(() => {});
+                releaseRecordingCapture();
+                mediaRecorder = null;
+                const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const suffix = Math.random().toString(36).slice(2, 9);
+                const filename = `session_${stamp}_${suffix}.${currentRecordedFormat}`;
+                const record = { filename, blob, isVideo: chosenFormat !== 'wav',
+                    format: currentRecordedFormat, seconds: recordSeconds, createdAt: Date.now() };
+                const entry = addRecording(record);
+                entry.savePromise = saveRecording(record, entry);
+                playRecord(filename, `Recorded: ${filename}`,
+                    `${recordSeconds}s · ${(blob.size / (1024 * 1024)).toFixed(2)} MB (${currentRecordedFormat.toUpperCase()})`);
             };
 
-            mediaRecorder.start(1000);
+            try {
+                mediaRecorder.start(1000);
+            } catch (err) {
+                mediaRecorder = null;
+                releaseRecordingCapture();
+                alert('Recording could not start: ' + err.message);
+                return;
+            }
             recordSeconds = 0;
             document.getElementById('rec-dot').classList.add('active');
             document.getElementById('rec-timer').style.display = 'inline';
@@ -1282,7 +1477,7 @@ private:
         }
 
         function stopSessionRecording() {
-            if (mediaRecorder) {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
                 mediaRecorder.stop();
             }
             clearInterval(recordTimerInterval);
