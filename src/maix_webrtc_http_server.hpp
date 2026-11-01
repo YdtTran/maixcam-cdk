@@ -13,6 +13,11 @@
 #include <thread>
 #include <atomic>
 #include <functional>
+#include <cstdlib>
+#include <stdexcept>
+#ifndef CPPHTTPLIB_OPENSSL_SUPPORT
+#define CPPHTTPLIB_OPENSSL_SUPPORT
+#endif
 #include "httplib.h"
 
 class MaixWebRTCHttpServer {
@@ -34,9 +39,6 @@ private:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MaixCAM G4c4 Operator Console</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --ground: #141416;
@@ -968,7 +970,6 @@ private:
 
     <audio id="remote-audio" autoplay></audio>
 
-    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
     <script src="client.js"></script>
     <script>
         function updateClock() {
@@ -1316,12 +1317,21 @@ private:
 )HTML";
 
     static constexpr const char WEBRTC_CLIENT_JS[] = R"JS(
-
-    const clientId = randomId(10);
-    const wsUrl = 'ws://' + window.location.hostname + ':8001/' + clientId;
+const clientId = randomId(10);
+    const signalToken = '__SIGNAL_TOKEN__';
+    const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.hostname + ':8001/' + (signalToken ? signalToken + '/' : '') + clientId;
     console.log('[WebRTC] Connecting to:', wsUrl);
     const websocket = new WebSocket(wsUrl);
 
+    let lastSignalingReply = Date.now();
+    const heartbeat = setInterval(() => {
+        if (websocket.readyState !== WebSocket.OPEN) return;
+        if (Date.now() - lastSignalingReply > 20000) {
+            websocket.close();
+            return;
+        }
+        websocket.send(JSON.stringify({ type: 'ping' }));
+    }, 5000);
     let pc = null;
     let dc = null;
     let localStream = null;
@@ -1371,6 +1381,11 @@ private:
 
     websocket.onclose = () => {
         console.warn('[WebRTC] WebSocket closed');
+        clearInterval(heartbeat);
+        stopTalk();
+        if (localStream) localStream.getTracks().forEach(track => track.stop());
+        if (pc) pc.close();
+        setTimeout(() => location.reload(), 4000 + Math.random() * 2000);
         if (connBadge && connText) {
             connBadge.className = 'status-pill disconnected';
             connText.textContent = 'Signaling Closed';
@@ -1388,6 +1403,8 @@ private:
     websocket.onmessage = async (evt) => {
         if (typeof evt.data !== 'string') return;
         const message = JSON.parse(evt.data);
+        lastSignalingReply = Date.now();
+        if (message.type === 'busy' && connText) connText.textContent = 'Device in use';
         if (message.type === 'offer') {
             await handleOffer(message);
         }
@@ -1396,13 +1413,14 @@ private:
     function createPeerConnection() {
         const config = {
             bundlePolicy: 'max-bundle',
-            iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
+            iceServers: [],
         };
 
         const peer = new RTCPeerConnection(config);
 
         peer.onconnectionstatechange = () => {
             console.log('[WebRTC] PeerConnection state:', peer.connectionState);
+            if (peer.connectionState === 'failed') websocket.close();
             if (connBadge && connText) {
                 if (peer.connectionState === 'connected') {
                     connBadge.className = 'status-pill connected';
@@ -1539,6 +1557,10 @@ private:
 
     // --- CALL-APP TALK BUTTON (SEAMLESS MIC TOGGLE - NO ARMED STEP) ---
     async function toggleTalk() {
+        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+            alert('Microphone requires HTTPS with the MaixCAM certificate authority trusted on this device.');
+            return;
+        }
         if (!localStream || !localMicTrack) {
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({
@@ -1652,6 +1674,11 @@ private:
         }
     });
 
+    window.addEventListener('pagehide', () => {
+        stopTalk();
+        websocket.close();
+    });
+
     // --- TELEMETRY POLLING ---
     async function pollTelemetry() {
         try {
@@ -1698,7 +1725,7 @@ private:
             }
         };
     }
-    
+
 )JS";
 
 public:
@@ -1707,7 +1734,33 @@ public:
                          uint16_t ws_port = 8001)
         : _host(host), _port(port), _stun_server(stun_server), _ws_port(ws_port), _is_running(false)
     {
-        _server = std::make_unique<httplib::Server>();
+        const char *cert = std::getenv("MAIX_WEBRTC_TLS_CERT");
+        const char *key = std::getenv("MAIX_WEBRTC_TLS_KEY");
+        if (cert || key) {
+            if (!cert || !key) throw std::runtime_error("TLS requires both certificate and key");
+            auto tls = std::make_unique<httplib::SSLServer>(cert, key);
+            if (!tls->is_valid()) throw std::runtime_error("Invalid TLS certificate or key");
+            _server = std::move(tls);
+        } else {
+            _server = std::make_unique<httplib::Server>();
+        }
+        _server->set_read_timeout(10);
+        _server->set_write_timeout(10);
+        _server->set_payload_max_length(65536);
+        _server->set_pre_routing_handler([](const httplib::Request &req, httplib::Response &res) {
+            if (req.has_header("Origin")) {
+                const std::string scheme = std::getenv("MAIX_WEBRTC_TLS_CERT") ? "https://" : "http://";
+                if (req.get_header_value("Origin") != scheme + req.get_header_value("Host")) {
+                    res.status = 403;
+                    res.set_content("Cross-origin request denied", "text/plain");
+                    return httplib::Server::HandlerResponse::Handled;
+                }
+            }
+            return httplib::Server::HandlerResponse::Unhandled;
+        });
+        _server->set_default_headers({{"Cache-Control", "no-store"},
+            {"X-Content-Type-Options", "nosniff"},
+            {"Permissions-Policy", "microphone=(self), camera=()"}});
     }
 
     ~MaixWebRTCHttpServer() {
@@ -1729,20 +1782,15 @@ public:
 
         _server->Get("/client.js", [this](const httplib::Request& req, httplib::Response& res) {
             std::string js_content = std::string(WEBRTC_CLIENT_JS);
-            std::string ws_url_old = "const wsUrl = 'ws://' + window.location.hostname + ':8001/' + clientId;";
-            std::string ws_url_new = "const wsUrl = 'ws://' + window.location.hostname + ':" + std::to_string(_ws_port) + "/' + clientId;";
-            size_t pos = js_content.find(ws_url_old);
-            if (pos != std::string::npos) {
-                js_content.replace(pos, ws_url_old.length(), ws_url_new);
-            }
+            const std::string old_port = ":8001/";
+            auto pos = js_content.find(old_port);
+            if (pos != std::string::npos)
+                js_content.replace(pos, old_port.size(), ":" + std::to_string(_ws_port) + "/");
 
-            std::string stun_old = "iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }]";
-            std::string stun_new = "iceServers: [{ urls: ['" + _stun_server + "'] }]";
-            pos = js_content.find(stun_old);
-            if (pos != std::string::npos) {
-                js_content.replace(pos, stun_old.length(), stun_new);
-            }
-
+            const char *token = std::getenv("MAIX_WEBRTC_SIGNAL_TOKEN");
+            const std::string marker = "__SIGNAL_TOKEN__";
+            pos = js_content.find(marker);
+            if (pos != std::string::npos) js_content.replace(pos, marker.size(), token ? token : "");
             res.set_content(js_content, "application/javascript; charset=utf-8");
         });
 

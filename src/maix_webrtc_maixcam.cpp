@@ -644,7 +644,7 @@ namespace maix::webrtc
         }
 
         MaixWebRTCServerBuilder builder;
-        builder.set_ice_server(this->_stun_server);
+        builder.set_ice_server(std::getenv("MAIX_WEBRTC_STANDALONE") ? "" : this->_stun_server);
 #ifdef MAIX_WEBRTC_G4A_TONE
         builder.set_audio(true).set_audio_sample_rate(48000).set_audio_channels(1);
         log::info("Experimental Opus audio enabled; set MAIX_WEBRTC_AUDIO_SOURCE=mic for microphone");

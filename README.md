@@ -1,5 +1,7 @@
 # MaixCAM Native WebRTC + Bluetooth Cockpit
 
+Standalone AP + HTTPS/WSS operation, client CA trust, deployment and rollback: [docs/STANDALONE.md](docs/STANDALONE.md). The current deployment uses SSID **MaixCAM** with **no Wi-Fi password**, as explicitly requested by the operator, and URL **https://192.168.4.1:8000/**. Older HTTP/router instructions below describe the prior mode.
+
 Hệ thống trạm điều khiển (Operator Cockpit) truyền phát Video WebRTC thời gian thực, thu âm Micro trường tại chỗ, và đàm thoại hai chiều phát trực tiếp qua tai nghe Bluetooth A2DP trên nền tảng MaixCAM (Sophgo CV182x / RISC-V 64-bit musl Linux).
 
 ---

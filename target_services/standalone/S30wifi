@@ -1,0 +1,7 @@
+#!/bin/sh
+# Preserve the factory launcher for rollback and optional STA operation.
+if [ -e /etc/maixcam-standalone/enabled ]; then
+    # S99's existing supervisor owns AP/DHCP/DNS and application recovery.
+    exit 0
+fi
+exec /etc/init.d/S30wifi.pre-standalone "$@"

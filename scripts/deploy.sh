@@ -21,6 +21,14 @@ STAGE="/root/g4c4-m2-stage-20261031-$SHORT_SHA"
 echo "Binary SHA256: $ACTUAL_SHA"
 echo "Stage Directory: $STAGE"
 
+# Standalone mode has an active supervisor and TLS/AP configuration. Its
+# deployment workflow stages/backups everything before stopping that supervisor.
+if timeout -k 2s 10s ssh -T -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE" \
+    'test -e /etc/maixcam-standalone/enabled'; then
+    echo "ERROR: Standalone mode detected. Use python3 scripts/standalone/deploy.py through USB recovery." >&2
+    exit 1
+fi
+
 echo "1. Stopping active service on target..."
 timeout -k 2s 20s ssh -T \
     -o ConnectTimeout=5 \

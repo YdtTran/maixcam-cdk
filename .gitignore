@@ -9,3 +9,11 @@ build/*.log
 recordings/
 *.wav
 *.mp4
+
+# Standalone device identities and private CA
+build/standalone-secrets/
+build/standalone-stage/
+build/standalone-venv/
+
+# Persistent hardware test logs/results remain local and on the device
+/agent_progress/standalone/evidence/

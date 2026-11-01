@@ -1,0 +1,34 @@
+#!/bin/sh
+# The existing boot entry now supervises AP readiness and the same media service.
+PIDFILE=/run/webrtc_autostart.pid
+DAEMON=/root/webrtc_autostart_daemon.sh
+case "${1:-status}" in
+    start)
+        [ -e /boot/webrtc.disable ] || [ -e /root/webrtc.disable ] && exit 0
+        if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then exit 0; fi
+        # Recover a lock left by an abruptly terminated supervisor.
+        if [ -s "$PIDFILE" ] && ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+            rm -f "$PIDFILE"
+            rmdir /run/maixcam-supervisor.lock 2>/dev/null || true
+        fi
+        nohup "$DAEMON" daemon >/dev/null 2>&1 &
+        ;;
+    stop)
+        if [ -s "$PIDFILE" ]; then
+            pid=$(cat "$PIDFILE")
+            kill "$pid" 2>/dev/null || true
+            n=0
+            while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 5 ]; do sleep 1; n=$((n + 1)); done
+            if kill -0 "$pid" 2>/dev/null; then echo 'Supervisor did not stop'; exit 1; fi
+        fi
+        /root/webrtc_service.sh stop
+        /root/maixcam_standalone_network.sh stop
+        ;;
+    restart) "$0" stop && "$0" start ;;
+    status)
+        "$DAEMON" --status
+        /root/maixcam_standalone_network.sh status
+        /root/webrtc_service.sh status
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 2 ;;
+esac

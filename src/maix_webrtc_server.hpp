@@ -371,6 +371,9 @@ public:
 
             auto rx = std::make_shared<G4c4OpusRx>(_shared_playback);
             _audio_rx = rx;
+            // A standalone session starts muted, including after disconnect.
+            // The existing decoder defaults to ON for legacy integration tests.
+            if (std::getenv("MAIX_WEBRTC_STANDALONE")) rx->set_talk_state(false);
 
             _audio_track->onFrame(
                 [weak_rx = std::weak_ptr<G4c4OpusRx>(rx)]
@@ -693,6 +696,7 @@ public:
 
             _builtin_signaling_server->set_on_client_disconnected([this](const std::string &client_id) {
                 MAIX_WEBRTC_LOG("[WebRTC] Client %s disconnected, resetting connection...\n", client_id.c_str());
+                set_talk_state(false);
                 reset_peer_connection();
             });
 
