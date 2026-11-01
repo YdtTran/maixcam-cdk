@@ -1,0 +1,86 @@
+#!/bin/sh
+# /etc/init.d/S42bt_manager
+# SysVinit controller for Bluetooth event-driven manager daemon
+
+DAEMON="bt_event_manager"
+DAEMON_PATH="/root/bt_event_manager.sh"
+PIDFILE="/var/run/bt_manager.pid"
+STATEFILE="/run/bt_manager.state"
+
+start() {
+    printf "Starting %s: " "$DAEMON"
+    
+    if [ -f "$PIDFILE" ]; then
+        PID=$(cat "$PIDFILE" 2>/dev/null)
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            echo "ALREADY RUNNING (PID $PID)"
+            return 0
+        fi
+        rm -f "$PIDFILE"
+    fi
+
+    if [ ! -x "$DAEMON_PATH" ]; then
+        echo "FAIL (executable $DAEMON_PATH not found)"
+        return 1
+    fi
+
+    start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON_PATH"
+    status=$?
+    if [ "$status" -eq 0 ]; then
+        echo "OK"
+    else
+        echo "FAIL"
+    fi
+    return "$status"
+}
+
+stop() {
+    printf "Stopping %s: " "$DAEMON"
+    if [ -f "$PIDFILE" ]; then
+        PID=$(cat "$PIDFILE" 2>/dev/null)
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            kill -TERM "$PID" 2>/dev/null || true
+            sleep 1
+        fi
+        rm -f "$PIDFILE"
+    fi
+    for p in $(ps | grep '/bin/sh /root/bt_event_manager.sh' | grep -v grep | awk '{print $1}'); do
+        if [ "$p" != "$$" ]; then
+            kill -9 "$p" 2>/dev/null || true
+        fi
+    done
+    killall dbus-monitor 2>/dev/null || true
+    echo "OK"
+    return 0
+}
+
+status() {
+    if [ -f "$PIDFILE" ]; then
+        PID=$(cat "$PIDFILE" 2>/dev/null)
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            echo "$DAEMON is RUNNING (PID $PID)"
+            if [ -f "$STATEFILE" ]; then
+                cat "$STATEFILE"
+            fi
+            return 0
+        fi
+    fi
+    echo "$DAEMON is STOPPED"
+    return 1
+}
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+case "$1" in
+    start|stop|restart|status)
+        "$1"
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac

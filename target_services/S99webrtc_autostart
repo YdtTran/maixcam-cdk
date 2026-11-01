@@ -1,0 +1,112 @@
+#!/bin/sh
+# ==============================================================================
+# S99webrtc_autostart — SysVinit service controller for WebRTC Autostart
+# Target Location: /etc/init.d/S99webrtc_autostart
+# Architecture: PLAN-01 / Implementation: PLAN-02
+# ==============================================================================
+
+DAEMON="/root/webrtc_autostart_daemon.sh"
+PIDFILE="/run/webrtc_autostart.pid"
+BYPASS_BOOT="/boot/webrtc.disable"
+BYPASS_ROOT="/root/webrtc.disable"
+
+start() {
+    echo -n "Starting WebRTC Wi-Fi Autostart Manager: "
+
+    # 1. Hardware / root filesystem fail-safe bypass check
+    if [ -e "$BYPASS_BOOT" ] || [ -e "$BYPASS_ROOT" ]; then
+        echo "DISABLED (Bypass switch detected at $BYPASS_BOOT or $BYPASS_ROOT)"
+        exit 0
+    fi
+
+    # 2. Check if daemon is already running
+    if [ -f "$PIDFILE" ]; then
+        PID=$(cat "$PIDFILE" 2>/dev/null || echo "")
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            echo "ALREADY RUNNING (Daemon PID $PID)"
+            return 0
+        fi
+        rm -f "$PIDFILE" 2>/dev/null || true
+    fi
+
+    # 3. Ensure executable exists
+    if [ ! -x "$DAEMON" ]; then
+        echo "FAILED (Daemon $DAEMON not found or not executable)"
+        return 1
+    fi
+
+    # 4. Asynchronous detach: Fork daemon into background immediately
+    # SysVinit rcS MUST NOT block waiting for network or service startup.
+    "$DAEMON" daemon >/dev/null 2>&1 &
+    echo "OK (Started background supervisor)"
+    return 0
+}
+
+stop() {
+    echo -n "Stopping WebRTC Wi-Fi Autostart Manager: "
+
+    # 1. Stop daemon supervisor
+    if [ -f "$PIDFILE" ]; then
+        PID=$(cat "$PIDFILE" 2>/dev/null || echo "")
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            kill "$PID" 2>/dev/null || true
+        fi
+        rm -f "$PIDFILE" 2>/dev/null || true
+    fi
+    killall webrtc_autostart_daemon.sh 2>/dev/null || true
+
+    # 2. Stop application candidate service
+    if [ -x "/root/webrtc_service.sh" ]; then
+        /root/webrtc_service.sh stop >/dev/null 2>&1 || true
+    fi
+
+    echo "OK"
+    return 0
+}
+
+status() {
+    echo "=== WebRTC Autostart Daemon Status ==="
+    if [ -f "$PIDFILE" ]; then
+        PID=$(cat "$PIDFILE" 2>/dev/null || echo "")
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            echo "Daemon Status: RUNNING (PID $PID)"
+        else
+            echo "Daemon Status: STALE_PIDFILE (PID $PID dead)"
+        fi
+    else
+        echo "Daemon Status: STOPPED / IDLE"
+    fi
+
+    if [ -x "$DAEMON" ]; then
+        echo "--- State Telemetry ---"
+        "$DAEMON" --status
+    fi
+
+    echo "=== WebRTC Application Service Status ==="
+    if [ -x "/root/webrtc_service.sh" ]; then
+        /root/webrtc_service.sh status
+    else
+        echo "Service script /root/webrtc_service.sh not found."
+    fi
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        sleep 1
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac

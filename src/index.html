@@ -1,0 +1,1284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MaixCAM G4c4 Operator Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --ground: #141416;
+            --surface: #101013;
+            --raised: #1c1c20;
+            --border: #222226;
+            --rule: #19191d;
+            --control: #26262b;
+            --control-hover: #323238;
+            --text: #ffffff;
+            --muted: #84868c;
+            --accent: #4a8ad6;
+            --positive: #44a282;
+            --negative: #e5566f;
+            --warning: #d9a441;
+            --pill-positive-bg: #152620;
+            --pill-positive-ink: #5fc39c;
+            --pill-negative-bg: #2b171c;
+            --pill-negative-ink: #e5566f;
+            --pill-warning-bg: #292215;
+            --pill-warning-ink: #d9a441;
+            --pill-neutral-bg: #1c1c20;
+            --pill-neutral-ink: #b0b2b8;
+            --radius-card: 6px;
+            --radius-control: 6px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html, body {
+            height: 100vh;
+            max-height: 100vh;
+            overflow: hidden;
+            background-color: var(--ground);
+            color: var(--text);
+            font-family: "Public Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-size: 13px;
+            line-height: 1.4;
+            display: flex;
+            flex-direction: column;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        ::-webkit-scrollbar {
+            width: 5px;
+            height: 5px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--surface);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--control);
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--control-hover);
+        }
+
+        .tabular {
+            font-variant-numeric: tabular-nums;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+
+        header.app-shell {
+            height: 44px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            gap: 12px;
+            flex-shrink: 0;
+            z-index: 50;
+        }
+
+        .brand-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .brand-mark {
+            width: 24px;
+            height: 24px;
+            background: var(--raised);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-control);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        .brand-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .brand-tag {
+            font-size: 11px;
+            color: var(--muted);
+            border-left: 1px solid var(--border);
+            padding-left: 8px;
+        }
+
+        .status-indicators {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            font-weight: 500;
+            padding: 3px 8px;
+            border-radius: 999px;
+            background: var(--pill-neutral-bg);
+            color: var(--pill-neutral-ink);
+            border: 1px solid var(--border);
+        }
+
+        .status-pill.connected {
+            background: var(--pill-positive-bg);
+            color: var(--pill-positive-ink);
+            border-color: rgba(68, 162, 130, 0.3);
+        }
+
+        .status-pill.connecting {
+            background: var(--pill-warning-bg);
+            color: var(--pill-warning-ink);
+            border-color: rgba(217, 164, 65, 0.3);
+        }
+
+        .status-pill.disconnected {
+            background: var(--pill-negative-bg);
+            color: var(--pill-negative-ink);
+            border-color: rgba(229, 86, 111, 0.3);
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .session-clock {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        main.workspace {
+            flex: 1;
+            min-height: 0;
+            display: grid;
+            grid-template-columns: 1.25fr 0.75fr;
+            gap: 12px;
+            padding: 12px;
+            overflow: hidden;
+            max-width: 1720px;
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        @media (max-width: 1100px) {
+            main.workspace {
+                grid-template-columns: 1fr;
+                overflow-y: auto;
+            }
+        }
+
+        .column-stage, .column-vault {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            min-height: 0;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-card);
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        .video-card {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            background: #000000;
+            position: relative;
+        }
+
+        .video-container {
+            flex: 1;
+            min-height: 0;
+            position: relative;
+            background: #000000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        video#video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: none;
+            transition: transform 0.25s cubic-bezier(0.2, 0, 0, 1);
+        }
+
+        canvas#video-canvas {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+
+        .video-meta-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            display: flex;
+            gap: 6px;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .meta-chip {
+            background: rgba(16, 16, 19, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            color: var(--text);
+            padding: 3px 8px;
+            border-radius: var(--radius-control);
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        /* Minimal Call Action Dock: Pure Icons Only */
+        .call-bar {
+            position: absolute;
+            bottom: 14px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(20, 20, 24, 0.95);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            padding: 6px 10px;
+            border-radius: 999px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            z-index: 20;
+        }
+
+        .call-btn {
+            width: 38px;
+            height: 38px;
+            border-radius: 50%;
+            background: var(--control);
+            border: 1px solid var(--border);
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: transform 0.15s, background-color 0.15s, border-color 0.15s, color 0.15s;
+            position: relative;
+            outline: none;
+        }
+
+        .call-btn:hover {
+            background: var(--control-hover);
+            transform: translateY(-1px);
+        }
+
+        .call-btn:active {
+            transform: translateY(1px);
+        }
+
+        .call-btn.btn-mic-muted {
+            background: #2b171c;
+            border-color: rgba(229, 86, 111, 0.4);
+            color: var(--negative);
+        }
+
+        .call-btn.btn-mic-live {
+            background: #152620;
+            border-color: rgba(68, 162, 130, 0.5);
+            color: var(--positive);
+        }
+
+        .call-btn.btn-listen-active {
+            background: #172433;
+            border-color: rgba(74, 138, 214, 0.5);
+            color: var(--accent);
+        }
+
+        .call-btn.btn-listen-muted {
+            background: var(--control);
+            color: var(--muted);
+        }
+
+        .call-btn.btn-record-active {
+            background: #2b171c;
+            border-color: var(--negative);
+            color: var(--negative);
+            animation: pulseRecord 1.2s infinite alternate;
+        }
+
+        @keyframes pulseRecord {
+            0% { transform: scale(1); }
+            100% { transform: scale(1.08); }
+        }
+
+        .call-divider {
+            width: 1px;
+            height: 20px;
+            background: rgba(255, 255, 255, 0.14);
+            margin: 0 2px;
+        }
+
+        /* Telemetry KPI Strip */
+        .kpi-strip {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            border-top: 1px solid var(--border);
+            background: var(--surface);
+            flex-shrink: 0;
+        }
+
+        .kpi-cell {
+            padding: 8px 12px;
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .kpi-cell:last-child {
+            border-right: none;
+        }
+
+        .kpi-label {
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        .kpi-value {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .kpi-sub {
+            font-size: 10px;
+            color: var(--muted);
+        }
+
+        /* Right Column (Vault & Diagnostics) */
+        .tab-bar {
+            display: flex;
+            border-bottom: 1px solid var(--border);
+            background: var(--raised);
+            flex-shrink: 0;
+        }
+
+        .tab-btn {
+            height: 38px;
+            padding: 0 16px;
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--muted);
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: color 0.15s;
+        }
+
+        .tab-btn:hover {
+            color: var(--text);
+        }
+
+        .tab-btn.active {
+            color: var(--text);
+            border-bottom-color: var(--accent);
+            background: var(--surface);
+        }
+
+        /* Records Sub-Box */
+        .recorder-banner {
+            padding: 10px 14px;
+            background: var(--raised);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .record-title-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .rec-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--muted);
+        }
+
+        .rec-dot.active {
+            background: var(--negative);
+        }
+
+        .rec-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .rec-timer {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--negative);
+        }
+
+        .records-table-wrap {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        table.records-table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-size: 12px;
+        }
+
+        table.records-table th {
+            padding: 8px 12px;
+            background: var(--surface);
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 500;
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 5;
+        }
+
+        table.records-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--rule);
+            color: var(--text);
+            vertical-align: middle;
+        }
+
+        table.records-table tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .record-tag {
+            display: inline-block;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-weight: 600;
+        }
+
+        .tag-video {
+            background: #172433;
+            color: #7ab2f5;
+            border: 1px solid rgba(74, 138, 214, 0.3);
+        }
+
+        .tag-downlink {
+            background: #152620;
+            color: #5fc39c;
+            border: 1px solid rgba(68, 162, 130, 0.3);
+        }
+
+        .tag-test {
+            background: #292215;
+            color: #e5b356;
+            border: 1px solid rgba(217, 164, 65, 0.3);
+        }
+
+        .table-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-action-sm {
+            padding: 3px 8px;
+            font-size: 11px;
+            height: 24px;
+            background: var(--control);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-control);
+            color: var(--text);
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            text-decoration: none;
+            transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+        }
+
+        .btn-action-sm:hover {
+            background: var(--control-hover);
+        }
+
+        .btn-action-del {
+            color: var(--muted);
+        }
+
+        .btn-action-del:hover {
+            background: #2b171c;
+            border-color: rgba(229, 86, 111, 0.4);
+            color: var(--negative);
+        }
+
+        /* Vault Inline Player */
+        .vault-player-deck {
+            padding: 10px 14px;
+            background: var(--surface);
+            border-top: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .player-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .player-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .player-meta {
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        audio#vault-audio {
+            width: 100%;
+            height: 30px;
+            outline: none;
+        }
+
+        .spec-list {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .spec-row {
+            padding: 9px 14px;
+            border-bottom: 1px solid var(--rule);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .spec-name {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .spec-val {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text);
+            text-align: right;
+        }
+
+        footer.app-footer {
+            height: 26px;
+            background: var(--surface);
+            border-top: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            font-size: 11px;
+            color: var(--muted);
+            flex-shrink: 0;
+        }
+
+        .icon {
+            width: 16px;
+            height: 16px;
+            stroke-width: 2;
+            stroke: currentColor;
+            fill: none;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            flex-shrink: 0;
+        }
+    </style>
+</head>
+<body>
+    <header class="app-shell">
+        <div class="brand-group">
+            <div class="brand-mark">MC</div>
+            <span class="brand-title">MaixCAM G4c4</span>
+            <span class="brand-tag">Operator Station</span>
+        </div>
+
+        <div class="status-indicators">
+            <div id="conn-status-badge" class="status-pill connecting">
+                <span class="status-dot"></span>
+                <span id="conn-text">Connecting</span>
+            </div>
+            <div class="status-pill connected">
+                <span class="status-dot"></span>
+                <span>EDIFIER X2 Plus</span>
+            </div>
+            <div id="rotation-badge" class="status-pill">
+                <span>Rotation: 0 deg</span>
+            </div>
+        </div>
+
+        <span id="clock" class="session-clock tabular">--:--:-- UTC</span>
+    </header>
+
+    <main class="workspace">
+        <div class="column-stage">
+            <div class="card video-card">
+                <div class="video-container">
+                    <video id="video" autoplay playsinline muted></video>
+                    <canvas id="video-canvas"></canvas>
+                    
+                    <div class="video-meta-overlay">
+                        <span id="res-badge" class="meta-chip tabular">640 × 480 @ 30fps</span>
+                        <span class="meta-chip">H.264 High</span>
+                        <span class="meta-chip">MMF VPSS</span>
+                    </div>
+
+                    <!-- Clean Call Dock: Pure Icons Only -->
+                    <div class="call-bar">
+                        <button id="listen-btn" class="call-btn btn-listen-muted" title="Toggle Field Audio (Listen)">
+                            <svg class="icon" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                        </button>
+
+                        <button id="talk-btn" class="call-btn btn-mic-muted" title="Toggle Operator Microphone (Talk)">
+                            <svg class="icon" viewBox="0 0 24 24"><path d="m18.54 18.54a10.8 10.8 0 0 1-6.54 2.46c-5.52 0-10-4.48-10-10 0-2.45.88-4.7 2.34-6.46"/><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><line x1="1" x2="23" y1="1" y2="23"/></svg>
+                        </button>
+
+                        <div class="call-divider"></div>
+
+                        <button id="rotate-btn" class="call-btn" title="Rotate Camera View (0 / 90 / 180 / 270 deg)" onclick="toggleRotationUI()">
+                            <svg class="icon" viewBox="0 0 24 24"><path d="M21.5 2v6h-6"/><path d="M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+                        </button>
+
+                        <button id="record-btn" class="call-btn" title="Record Video & Audio Stream" onclick="toggleSessionRecording()">
+                            <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="currentColor"/></svg>
+                        </button>
+
+                        <button id="snapshot-btn" class="call-btn" title="Capture Still Snapshot Frame" onclick="captureSnapshot()">
+                            <svg class="icon" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                        </button>
+
+                        <button id="fullscreen-btn" class="call-btn" title="Toggle Fullscreen">
+                            <svg class="icon" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="kpi-strip">
+                    <div class="kpi-cell">
+                        <span class="kpi-label">Uplink Mic (ADC)</span>
+                        <span id="tel-uplink" class="kpi-value tabular">0 pkts (0.0 KB)</span>
+                        <span class="kpi-sub">Opus 48 kHz Mono</span>
+                    </div>
+                    <div class="kpi-cell">
+                        <span class="kpi-label">Downlink Decoded</span>
+                        <span id="tel-downlink" class="kpi-value tabular">0 / 0 pkts</span>
+                        <span class="kpi-sub">Opus RTP PT 97</span>
+                    </div>
+                    <div class="kpi-cell">
+                        <span class="kpi-label">A2DP Playback</span>
+                        <span id="tel-playback" class="kpi-value tabular">0 frames</span>
+                        <span class="kpi-sub">EDIFIER X2 Plus</span>
+                    </div>
+                    <div class="kpi-cell">
+                        <span class="kpi-label">ALSA Underruns</span>
+                        <span id="tel-underruns" class="kpi-value tabular">0 underruns</span>
+                        <span class="kpi-sub">Playback Safe</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="column-vault">
+            <div class="card" style="height: 100%;">
+                <div class="tab-bar">
+                    <button id="tab-records-btn" class="tab-btn active" onclick="switchTab('records')">
+                        <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+                        <span>Video & Audio Records</span>
+                    </button>
+                    <button id="tab-hw-btn" class="tab-btn" onclick="switchTab('hw')">
+                        <svg class="icon" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 7h10v10H7z"/><line x1="3" x2="7" y1="9" y2="9"/><line x1="3" x2="7" y1="15" y2="15"/><line x1="17" x2="21" y1="9" y2="9"/><line x1="17" x2="21" y1="15" y2="15"/></svg>
+                        <span>Hardware & Stack</span>
+                    </button>
+                </div>
+
+                <div id="tab-records-content" style="display:flex; flex-direction:column; flex:1; min-height:0;">
+                    <div class="recorder-banner">
+                        <div class="record-title-group">
+                            <span id="rec-dot" class="rec-dot"></span>
+                            <span id="rec-status-label" class="rec-label">Full Video+Audio Capture</span>
+                            <span id="rec-timer" class="rec-timer tabular" style="display:none;">00:00:00</span>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <select id="rec-format-select" class="btn-action-sm tabular" style="height:26px; font-size:11px; padding:0 6px; cursor:pointer;" title="Choose recording format">
+                                <option value="mp4">Format: MP4 (H.264)</option>
+                                <option value="webm">Format: WebM</option>
+                                <option value="wav">Format: Audio Only</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="records-table-wrap">
+                        <table class="records-table">
+                            <thead>
+                                <tr>
+                                    <th>Asset / Stream</th>
+                                    <th>Format & Duration</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="records-table-body">
+                                <tr>
+                                    <td>
+                                        <div style="font-weight:600;">session_capture_1080p.webm</div>
+                                        <span class="record-tag tag-video">Video+Audio Stream</span>
+                                    </td>
+                                    <td class="tabular">1080p · 48 kHz</td>
+                                    <td>
+                                        <div class="table-actions">
+                                            <button class="btn-action-sm" onclick="playRecord('downlink_pc_to_maix.wav', 'Session Video+Audio Capture', '1080p WebM · 48 kHz')">
+                                                <svg class="icon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                                <span>Play</span>
+                                            </button>
+                                            <button class="btn-action-sm btn-action-del" onclick="deleteRecord(this, 'session_capture_1080p.webm')" title="Delete recording">
+                                                <svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td>
+                                        <div style="font-weight:600;">downlink_pc_to_maix.wav</div>
+                                        <span class="record-tag tag-downlink">Downlink Master</span>
+                                    </td>
+                                    <td class="tabular">27.46s · 48k Stereo</td>
+                                    <td>
+                                        <div class="table-actions">
+                                            <button class="btn-action-sm" onclick="playRecord('downlink_pc_to_maix.wav', 'Downlink Master (PC -> Maix -> Headset)', '27.46s · 48 kHz Stereo')">
+                                                <svg class="icon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                                <span>Play</span>
+                                            </button>
+                                            <button class="btn-action-sm btn-action-del" onclick="deleteRecord(this, 'downlink_pc_to_maix.wav')" title="Delete recording">
+                                                <svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td>
+                                        <div style="font-weight:600;">sample_30s_live_mic.wav</div>
+                                        <span class="record-tag tag-downlink">Uplink Mic</span>
+                                    </td>
+                                    <td class="tabular">30.00s · 48k Mono</td>
+                                    <td>
+                                        <div class="table-actions">
+                                            <button class="btn-action-sm" onclick="playRecord('sample_30s_live_mic.wav', 'Uplink Field Mic (MaixCAM ADC)', '30.00s · 48 kHz Mono')">
+                                                <svg class="icon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                                <span>Play</span>
+                                            </button>
+                                            <button class="btn-action-sm btn-action-del" onclick="deleteRecord(this, 'sample_30s_live_mic.wav')" title="Delete recording">
+                                                <svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td>
+                                        <div style="font-weight:600;">sample1_harmonic_tone.wav</div>
+                                        <span class="record-tag tag-test">Dual Tone 440+880Hz</span>
+                                    </td>
+                                    <td class="tabular">4.96s · SNR 5.6 dB</td>
+                                    <td>
+                                        <div class="table-actions">
+                                            <button class="btn-action-sm" onclick="playRecord('sample1_harmonic_tone_and_mic.wav', 'Harmonic Acoustic Test', '4.96s · 48 kHz Mono')">
+                                                <svg class="icon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                                <span>Play</span>
+                                            </button>
+                                            <button class="btn-action-sm btn-action-del" onclick="deleteRecord(this, 'sample1_harmonic_tone.wav')" title="Delete recording">
+                                                <svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td>
+                                        <div style="font-weight:600;">sample2_chirp_sweep.wav</div>
+                                        <span class="record-tag tag-test">Sweep 100Hz-8kHz</span>
+                                    </td>
+                                    <td class="tabular">5.00s · SNR 3.8 dB</td>
+                                    <td>
+                                        <div class="table-actions">
+                                            <button class="btn-action-sm" onclick="playRecord('sample2_chirp_sweep_and_mic.wav', 'Frequency Chirp Sweep', '5.00s · 48 kHz Mono')">
+                                                <svg class="icon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                                <span>Play</span>
+                                            </button>
+                                            <button class="btn-action-sm btn-action-del" onclick="deleteRecord(this, 'sample2_chirp_sweep.wav')" title="Delete recording">
+                                                <svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="vault-player-deck">
+                        <div class="player-info">
+                            <span id="now-playing-title" class="player-title">Select a record to play</span>
+                            <span id="now-playing-meta" class="player-meta tabular">Ready</span>
+                        </div>
+                        <audio id="vault-audio" controls preload="none"></audio>
+                    </div>
+                </div>
+
+                <div id="tab-hw-content" style="display:none; flex-direction:column; flex:1; min-height:0;">
+                    <div class="spec-list">
+                        <div class="spec-row">
+                            <span class="spec-name">SoC Platform</span>
+                            <span class="spec-val tabular">Sophgo CV182x · RISC-V 64-bit musl</span>
+                        </div>
+                        <div class="spec-row">
+                            <span class="spec-name">Linux Kernel</span>
+                            <span class="spec-val tabular">5.10.4-tag- /dev/snd/pcmC0D0c</span>
+                        </div>
+                        <div class="spec-row">
+                            <span class="spec-name">Video Capture</span>
+                            <span class="spec-val tabular">GalaxyCore GC4653 CMOS · MMF VPSS</span>
+                        </div>
+                        <div class="spec-row">
+                            <span class="spec-name">Audio Uplink</span>
+                            <span class="spec-val tabular">Card 0 cv182xaadc (ADC) · 48 kHz Mono</span>
+                        </div>
+                        <div class="spec-row">
+                            <span class="spec-name">Audio Downlink</span>
+                            <span class="spec-val tabular">Card 1 cv182xadac / BlueALSA A2DP</span>
+                        </div>
+                        <div class="spec-row">
+                            <span class="spec-name">Bluetooth Stack</span>
+                            <span class="spec-val tabular">BlueZ 5.68 (PID 518) · BlueALSA 4.1.1</span>
+                        </div>
+                        <div class="spec-row">
+                            <span class="spec-name">Target Headset</span>
+                            <span class="spec-val tabular">EDIFIER X2 Plus (6C:16:29:7B:00:D4)</span>
+                        </div>
+                        <div class="spec-row">
+                            <span class="spec-name">A2DP Endpoint</span>
+                            <span class="spec-val tabular">/org/bluealsa/hci0/.../a2dpsrc/sink</span>
+                        </div>
+                        <div class="spec-row">
+                            <span class="spec-name">Rotation Mode</span>
+                            <span id="spec-rotation" class="spec-val tabular">0 deg (UI Gated)</span>
+                        </div>
+                        <div class="spec-row">
+                            <span class="spec-name">Signaling WS</span>
+                            <span class="spec-val tabular">:8001 / WebSocket Protocol</span>
+                        </div>
+                        <div class="spec-row">
+                            <span class="spec-name">Web Server</span>
+                            <span class="spec-val tabular">:8000 / Native cpp-httplib</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="app-footer">
+        <div>MaixCAM Native WebRTC + Bluetooth Integration (G4c4 M2)</div>
+        <div class="tabular">HTTP 8000 · WS 8001 · STUN 19302</div>
+    </footer>
+
+    <audio id="remote-audio" autoplay></audio>
+
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <script src="client.js"></script>
+    <script>
+        function updateClock() {
+            const now = new Date();
+            const h = String(now.getUTCHours()).padStart(2, '0');
+            const m = String(now.getUTCMinutes()).padStart(2, '0');
+            const s = String(now.getUTCSeconds()).padStart(2, '0');
+            document.getElementById('clock').textContent = `${h}:${m}:${s} UTC`;
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // Canonical default camera mounting orientation (270 deg CW = 90 deg CCW)
+        const BASE_ROTATION = 270;
+        let canvasPainter = null;
+        let currentRotation = 0;
+
+        try {
+            const saved = localStorage.getItem('maixcam_operator_rotation');
+            if (saved !== null) {
+                const parsed = parseInt(saved, 10);
+                if ([0, 90, 180, 270].includes(parsed)) {
+                    currentRotation = parsed;
+                }
+            }
+        } catch (e) {}
+
+        function getEffectiveRotation() {
+            return (BASE_ROTATION + currentRotation) % 360;
+        }
+
+        function startCanvasPainter(video, canvas, initialRotation) {
+            const ctx = canvas.getContext('2d', { alpha: false });
+            let stopped = false;
+            let animId = 0;
+            let rot = initialRotation;
+
+            const draw = () => {
+                if (stopped || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+                const isPortrait = rot % 180 !== 0;
+                const cw = isPortrait ? 480 : 640;
+                const ch = isPortrait ? 640 : 480;
+                if (canvas.width !== cw || canvas.height !== ch) {
+                    canvas.width = cw;
+                    canvas.height = ch;
+                }
+                ctx.save();
+                ctx.translate(cw / 2, ch / 2);
+                ctx.rotate((rot + BASE_ROTATION) * Math.PI / 180);
+                // Scale factor 640 / 480 = 4/3 crops raw 640x480 top/bottom symmetrically to fill 640x480 baseline
+                const scale = 640 / 480;
+                ctx.scale(scale, scale);
+                ctx.drawImage(video, -video.videoWidth / 2, -video.videoHeight / 2);
+                ctx.restore();
+            };
+
+            const loop = () => {
+                if (stopped) return;
+                draw();
+                if (video.readyState >= 2 && typeof video.requestVideoFrameCallback === 'function') {
+                    animId = video.requestVideoFrameCallback(loop);
+                } else {
+                    animId = requestAnimationFrame(loop);
+                }
+            };
+            loop();
+
+            return {
+                setRotation: (r) => { rot = r; draw(); },
+                stop: () => {
+                    stopped = true;
+                    if (typeof video.cancelVideoFrameCallback === 'function') {
+                        video.cancelVideoFrameCallback(animId);
+                    } else {
+                        cancelAnimationFrame(animId);
+                    }
+                }
+            };
+        }
+
+        function applyRotation() {
+            const video = document.getElementById('video');
+            const canvas = document.getElementById('video-canvas');
+            if (!video || !canvas) return;
+
+            video.style.display = 'none';
+            canvas.style.display = 'block';
+
+            if (!canvasPainter) {
+                canvasPainter = startCanvasPainter(video, canvas, currentRotation);
+            } else {
+                canvasPainter.setRotation(currentRotation);
+            }
+
+            const rotBadge = document.getElementById('rotation-badge');
+            if (rotBadge) {
+                rotBadge.innerHTML = `<span>Rotation: ${currentRotation} deg</span>`;
+            }
+            const specRot = document.getElementById('spec-rotation');
+            if (specRot) {
+                specRot.textContent = `${currentRotation} deg (UI Gated)`;
+            }
+
+            try {
+                localStorage.setItem('maixcam_operator_rotation', currentRotation.toString());
+            } catch (e) {}
+        }
+
+        window.applyRotation = applyRotation;
+
+        function toggleRotationUI() {
+            currentRotation = (currentRotation + 90) % 360;
+            applyRotation();
+        }
+
+        // Initialize rotation state on load
+        applyRotation();
+
+        function switchTab(tab) {
+            const recordsBtn = document.getElementById('tab-records-btn');
+            const hwBtn = document.getElementById('tab-hw-btn');
+            const recordsContent = document.getElementById('tab-records-content');
+            const hwContent = document.getElementById('tab-hw-content');
+
+            if (tab === 'records') {
+                recordsBtn.classList.add('active');
+                hwBtn.classList.remove('active');
+                recordsContent.style.display = 'flex';
+                hwContent.style.display = 'none';
+            } else {
+                hwBtn.classList.add('active');
+                recordsBtn.classList.remove('active');
+                hwContent.style.display = 'flex';
+                recordsContent.style.display = 'none';
+            }
+        }
+
+        function playRecord(filename, title, meta) {
+            const player = document.getElementById('vault-audio');
+            const titleElem = document.getElementById('now-playing-title');
+            const metaElem = document.getElementById('now-playing-meta');
+
+            titleElem.textContent = title;
+            metaElem.textContent = meta;
+            player.src = `/recordings/${filename}`;
+            player.play().catch(() => {
+                synthesizeDemoAudio(title);
+            });
+        }
+
+        function deleteRecord(btn, filename) {
+            const row = btn.closest('tr');
+            if (row) {
+                row.remove();
+            }
+            const player = document.getElementById('vault-audio');
+            if (player.src && player.src.includes(filename)) {
+                player.pause();
+                player.src = '';
+                document.getElementById('now-playing-title').textContent = 'Select a record to play';
+                document.getElementById('now-playing-meta').textContent = 'Ready';
+            }
+        }
+
+        function synthesizeDemoAudio(label) {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(440, ctx.currentTime);
+            gain.gain.setValueAtTime(0.2, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1.5);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 1.5);
+            const metaElem = document.getElementById('now-playing-meta');
+            metaElem.textContent = 'Playing synthesized preview tone';
+        }
+
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let recordTimerInterval = null;
+        let recordSeconds = 0;
+        let currentRecordedFormat = 'mp4';
+
+        function toggleSessionRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                stopSessionRecording();
+            } else {
+                startSessionRecording();
+            }
+        }
+
+        function startSessionRecording() {
+            const videoElem = document.getElementById('video');
+            if (!videoElem.srcObject) {
+                alert('Stream not available yet for recording.');
+                return;
+            }
+
+            const formatSelect = document.getElementById('rec-format-select');
+            const chosenFormat = formatSelect ? formatSelect.value : 'mp4';
+            recordedChunks = [];
+
+            let mimeType = '';
+            let ext = 'mp4';
+
+            if (chosenFormat === 'mp4') {
+                const mp4Candidates = [
+                    'video/mp4;codecs=avc1,mp4a.40.2',
+                    'video/mp4;codecs=avc1,opus',
+                    'video/mp4;codecs=avc1',
+                    'video/mp4'
+                ];
+                for (const candidate of mp4Candidates) {
+                    if (MediaRecorder.isTypeSupported(candidate)) {
+                        mimeType = candidate;
+                        ext = 'mp4';
+                        break;
+                    }
+                }
+                if (!mimeType) {
+                    console.warn('[Recorder] MP4 not supported natively by this browser. Falling back to WebM.');
+                    ext = 'webm';
+                    mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=h264,opus') ? 'video/webm;codecs=h264,opus' : 'video/webm';
+                }
+            } else if (chosenFormat === 'wav') {
+                ext = 'webm';
+                mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+            } else {
+                ext = 'webm';
+                mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=h264,opus') ? 'video/webm;codecs=h264,opus' : 'video/webm';
+            }
+
+            currentRecordedFormat = ext;
+
+            try {
+                let streamToRecord = videoElem.srcObject;
+                if (chosenFormat === 'wav') {
+                    const audioTracks = streamToRecord.getAudioTracks();
+                    if (audioTracks.length > 0) {
+                        streamToRecord = new MediaStream(audioTracks);
+                    }
+                }
+                mediaRecorder = mimeType ? new MediaRecorder(streamToRecord, { mimeType }) : new MediaRecorder(streamToRecord);
+            } catch (err) {
+                try {
+                    mediaRecorder = new MediaRecorder(videoElem.srcObject);
+                    currentRecordedFormat = 'webm';
+                } catch (e2) {
+                    alert('MediaRecorder error: ' + e2.message);
+                    return;
+                }
+            }
+
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) recordedChunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = () => {
+                const actualMime = mediaRecorder.mimeType || (currentRecordedFormat === 'mp4' ? 'video/mp4' : 'video/webm');
+                const blob = new Blob(recordedChunks, { type: actualMime });
+                const url = URL.createObjectURL(blob);
+                const sizeMB = (blob.size / (1024 * 1024)).toFixed(2);
+                const timestamp = new Date().toISOString().substring(11, 19).replace(/:/g, '');
+                const filename = `session_${timestamp}.${currentRecordedFormat}`;
+                const tagLabel = currentRecordedFormat === 'mp4' ? 'MP4 Video' : (chosenFormat === 'wav' ? 'Audio Stream' : 'WebM Video');
+
+                const tbody = document.getElementById('records-table-body');
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>
+                        <div style="font-weight:600;">${filename}</div>
+                        <span class="record-tag tag-video">${tagLabel}</span>
+                    </td>
+                    <td class="tabular">${recordSeconds}s · ${currentRecordedFormat.toUpperCase()}</td>
+                    <td>
+                        <div class="table-actions">
+                            <a href="${url}" download="${filename}" class="btn-action-sm" title="Download ${currentRecordedFormat.toUpperCase()} file">
+                                <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                                <span>${currentRecordedFormat.toUpperCase()}</span>
+                            </a>
+                            <button class="btn-action-sm btn-action-del" onclick="deleteRecord(this, '${filename}')" title="Delete recording">
+                                <svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                            </button>
+                        </div>
+                    </td>
+                `;
+                tbody.prepend(row);
+                playRecord(filename, `Recorded: ${filename}`, `${recordSeconds}s · ${sizeMB} MB (${currentRecordedFormat.toUpperCase()})`);
+                document.getElementById('vault-audio').src = url;
+                document.getElementById('vault-audio').play().catch(() => {});
+            };
+
+            mediaRecorder.start(1000);
+            recordSeconds = 0;
+            document.getElementById('rec-dot').classList.add('active');
+            document.getElementById('rec-timer').style.display = 'inline';
+            document.getElementById('rec-timer').textContent = '00:00:00';
+            document.getElementById('record-btn').classList.add('btn-record-active');
+
+            recordTimerInterval = setInterval(() => {
+                recordSeconds++;
+                const hrs = String(Math.floor(recordSeconds / 3600)).padStart(2, '0');
+                const mins = String(Math.floor((recordSeconds % 3600) / 60)).padStart(2, '0');
+                const secs = String(recordSeconds % 60).padStart(2, '0');
+                document.getElementById('rec-timer').textContent = `${hrs}:${mins}:${secs}`;
+            }, 1000);
+        }
+
+        function stopSessionRecording() {
+            if (mediaRecorder) {
+                mediaRecorder.stop();
+            }
+            clearInterval(recordTimerInterval);
+            document.getElementById('rec-dot').classList.remove('active');
+            document.getElementById('rec-timer').style.display = 'none';
+            document.getElementById('record-btn').classList.remove('btn-record-active');
+        }
+
+        function captureSnapshot() {
+            const canvasElem = document.getElementById('video-canvas');
+            if (!canvasElem || !canvasElem.width || !canvasElem.height) {
+                alert('No active video frame available.');
+                return;
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = canvasElem.width;
+            canvas.height = canvasElem.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(canvasElem, 0, 0);
+
+            const a = document.createElement('a');
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            a.href = canvas.toDataURL('image/png');
+            a.download = `snapshot_${stamp}.png`;
+            a.click();
+        }
+    </script>
+</body>
+</html>

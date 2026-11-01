@@ -1,0 +1,11 @@
+# Bytecode & cache
+__pycache__/
+*.py[cod]
+
+# Logs
+build/*.log
+
+# Temporary recordings
+recordings/
+*.wav
+*.mp4
