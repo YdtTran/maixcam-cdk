@@ -15,6 +15,7 @@
 #include <functional>
 #include <cstdlib>
 #include <stdexcept>
+#include "maix_webrtc_audio_dsp.hpp"
 #ifndef CPPHTTPLIB_OPENSSL_SUPPORT
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #endif
@@ -31,6 +32,7 @@ private:
     std::atomic<bool> _is_running;
     std::function<std::string()> _metrics_callback;
     std::function<void(bool)> _talk_callback;
+    std::shared_ptr<maix::webrtc::MaixAudioUplinkDSP> _audio_dsp;
 
     static constexpr const char WEBRTC_INDEX_HTML[] = R"HTML(
 <!DOCTYPE html>
@@ -1024,6 +1026,69 @@ private:
 
                         <div style="display:flex; justify-content:flex-end; margin-top:2px;">
                             <button class="btn-action-sm" onclick="resetGateDefaultsUI()" style="height:26px; padding:0 12px;" title="Reset parameters to defaults">Reset to Defaults</button>
+                        </div>
+                    </div>
+
+                    <!-- Native MaixCAM Uplink Noise Suppression Card -->
+                    <div style="background:var(--raised); border:1px solid var(--border); border-radius:var(--radius-card); padding:10px 12px; display:flex; flex-direction:column; gap:10px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <div>
+                                <span style="font-weight:600; font-size:12px; color:var(--text);">3. Native MaixCAM Uplink Noise Suppression</span>
+                                <div style="font-size:10px; color:var(--muted); line-height:1.3; margin-top:2px;">
+                                    MaixCAM Mic &rarr; PCM Capture &rarr; HPF (50 Hz) &rarr; SpeexDSP (-6 dB) &rarr; Opus WebRTC &rarr; PC Browser
+                                </div>
+                            </div>
+                            <span id="uplink-dsp-badge" class="meta-chip tabular" style="background:var(--pill-positive-bg); color:var(--pill-positive-ink); font-weight:600;">HPF + SpeexDSP</span>
+                        </div>
+
+                        <!-- Mode Selector for A/B Testing -->
+                        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                            <span style="font-size:11px; color:var(--muted); font-weight:600;">A/B Mode:</span>
+                            <button id="uplink-btn-full" class="btn-action-sm" onclick="setUplinkDspModeUI('full')" style="height:26px; padding:0 8px; font-weight:600; border-color:var(--positive);" title="HPF + SpeexDSP (Default)">HPF + SpeexDSP</button>
+                            <button id="uplink-btn-hpf" class="btn-action-sm" onclick="setUplinkDspModeUI('hpf_only')" style="height:26px; padding:0 8px; font-weight:600;" title="High-Pass Filter only">HPF Only</button>
+                            <button id="uplink-btn-bypass" class="btn-action-sm" onclick="setUplinkDspModeUI('bypass')" style="height:26px; padding:0 8px; font-weight:600;" title="Raw microphone capture bypass">Bypass (Raw Mic)</button>
+                        </div>
+
+                        <!-- Speex Suppression Level Selector -->
+                        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                            <span style="font-size:11px; color:var(--muted); font-weight:600;">Speex Suppression:</span>
+                            <button id="uplink-btn-supp-6" class="btn-action-sm" onclick="setUplinkDspSuppressionUI(-6)" style="height:24px; padding:0 8px; font-weight:600; border-color:var(--positive);" title="-6 dB: Gentle suppression, maximum musical transparency">-6 dB (Default)</button>
+                            <button id="uplink-btn-supp-9" class="btn-action-sm" onclick="setUplinkDspSuppressionUI(-9)" style="height:24px; padding:0 8px; font-weight:600;" title="-9 dB: Balanced suppression">-9 dB</button>
+                            <button id="uplink-btn-supp-12" class="btn-action-sm" onclick="setUplinkDspSuppressionUI(-12)" style="height:24px; padding:0 8px; font-weight:600;" title="-12 dB: Strong background reduction">-12 dB</button>
+                            <button id="uplink-btn-supp-15" class="btn-action-sm" onclick="setUplinkDspSuppressionUI(-15)" style="height:24px; padding:0 8px; font-weight:600;" title="-15 dB: Aggressive environmental denoise">-15 dB</button>
+                            <button id="uplink-btn-supp-18" class="btn-action-sm" onclick="setUplinkDspSuppressionUI(-18)" style="height:24px; padding:0 8px; font-weight:600;" title="-18 dB: Deep suppression for high-noise environments">-18 dB</button>
+                            <button id="uplink-btn-supp-21" class="btn-action-sm" onclick="setUplinkDspSuppressionUI(-21)" style="height:24px; padding:0 8px; font-weight:600;" title="-21 dB: Maximum suppression for extreme noise">-21 dB</button>
+                        </div>
+
+                        <!-- HPF Cutoff Frequency Selector -->
+                        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                            <span style="font-size:11px; color:var(--muted); font-weight:600;">HPF Cutoff:</span>
+                            <button id="uplink-btn-hpf-50" class="btn-action-sm" onclick="setUplinkDspCutoffUI(50)" style="height:24px; padding:0 8px; font-weight:600; border-color:var(--positive);" title="50 Hz: Standard rumble filter, preserves musical bass">50 Hz (Default / Music)</button>
+                            <button id="uplink-btn-hpf-80" class="btn-action-sm" onclick="setUplinkDspCutoffUI(80)" style="height:24px; padding:0 8px; font-weight:600;" title="80 Hz: Voice mode, cuts ambient room rumble below 80 Hz">80 Hz (Voice Mode)</button>
+                        </div>
+
+                        <!-- Metrics & Telemetry Grid -->
+                        <div class="spec-list" style="margin-top:2px;">
+                            <div class="spec-row">
+                                <span class="spec-name">High-Pass Filter</span>
+                                <span id="uplink-dsp-hpf" class="spec-val tabular">2nd-order Butterworth IIR · 50 Hz</span>
+                            </div>
+                            <div class="spec-row">
+                                <span class="spec-name">SpeexDSP Preprocessor</span>
+                                <span id="uplink-dsp-speex" class="spec-val tabular">Denoise: -6 dB · AGC: Off · VAD: Off</span>
+                            </div>
+                            <div class="spec-row">
+                                <span class="spec-name">Accumulator & Frame</span>
+                                <span id="uplink-dsp-frame" class="spec-val tabular">20 ms (960 samples @ 48 kHz mono)</span>
+                            </div>
+                            <div class="spec-row">
+                                <span class="spec-name">DSP Execution Time</span>
+                                <span id="uplink-dsp-time" class="spec-val tabular">-- &mu;s / frame</span>
+                            </div>
+                            <div class="spec-row">
+                                <span class="spec-name">DSP CPU Load</span>
+                                <span id="uplink-dsp-cpu" class="spec-val tabular">-- % of 1 core</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2488,11 +2553,126 @@ registerProcessor('noise-gate-processor', NoiseGateProcessor);
                     if (elUnder) elUnder.textContent = underruns + ' underruns';
                 }
             }
+
+            if (data.uplink_dsp) {
+                updateUplinkDspUI(data.uplink_dsp);
+            }
         } catch (e) {
             // Server temporarily unreachable or rebooting
         }
     }
     setInterval(pollTelemetry, 1500);
+
+    window.setUplinkDspModeUI = async function(mode) {
+        try {
+            const res = await fetch('/api/audio_dsp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'mode=' + encodeURIComponent(mode)
+            });
+            if (res.ok) {
+                const data = await res.json();
+                updateUplinkDspUI(data);
+            }
+        } catch (e) {
+            console.warn('[Audio] Failed to set uplink DSP mode:', e);
+        }
+    };
+
+    window.setUplinkDspSuppressionUI = async function(db) {
+        try {
+            const res = await fetch('/api/audio_dsp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'speex_suppress=' + encodeURIComponent(db)
+            });
+            if (res.ok) {
+                const data = await res.json();
+                updateUplinkDspUI(data);
+            }
+        } catch (e) {
+            console.warn('[Audio] Failed to set uplink suppression level:', e);
+        }
+    };
+
+    window.setUplinkDspCutoffUI = async function(hz) {
+        try {
+            const res = await fetch('/api/audio_dsp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'hpf_cutoff=' + encodeURIComponent(hz)
+            });
+            if (res.ok) {
+                const data = await res.json();
+                updateUplinkDspUI(data);
+            }
+        } catch (e) {
+            console.warn('[Audio] Failed to set uplink HPF cutoff:', e);
+        }
+    };
+
+    function updateUplinkDspUI(dsp) {
+        if (!dsp) return;
+        const mode = dsp.mode || 'full';
+        const badge = document.getElementById('uplink-dsp-badge');
+        const btnFull = document.getElementById('uplink-btn-full');
+        const btnHpf = document.getElementById('uplink-btn-hpf');
+        const btnBypass = document.getElementById('uplink-btn-bypass');
+        const timeEl = document.getElementById('uplink-dsp-time');
+        const cpuEl = document.getElementById('uplink-dsp-cpu');
+        const speexEl = document.getElementById('uplink-dsp-speex');
+        const hpfEl = document.getElementById('uplink-dsp-hpf');
+
+        if (btnFull) btnFull.style.borderColor = (mode === 'full') ? 'var(--positive)' : 'var(--border)';
+        if (btnHpf) btnHpf.style.borderColor = (mode === 'hpf_only') ? 'var(--accent)' : 'var(--border)';
+        if (btnBypass) btnBypass.style.borderColor = (mode === 'bypass') ? 'var(--warning)' : 'var(--border)';
+
+        const curSupp = dsp.speex_suppress_db !== undefined ? dsp.speex_suppress_db : -6;
+        const curCutoff = dsp.hpf_cutoff_hz !== undefined ? Math.round(dsp.hpf_cutoff_hz) : 50;
+
+        [-6, -9, -12, -15, -18, -21].forEach(db => {
+            const btn = document.getElementById('uplink-btn-supp-' + Math.abs(db));
+            if (btn) btn.style.borderColor = (curSupp === db) ? 'var(--positive)' : 'var(--border)';
+        });
+
+        [50, 80].forEach(hz => {
+            const btn = document.getElementById('uplink-btn-hpf-' + hz);
+            if (btn) btn.style.borderColor = (curCutoff === hz) ? 'var(--positive)' : 'var(--border)';
+        });
+
+        if (badge) {
+            if (mode === 'full') {
+                badge.textContent = 'HPF + SpeexDSP (' + curSupp + 'dB)';
+                badge.style.background = 'var(--pill-positive-bg)';
+                badge.style.color = 'var(--pill-positive-ink)';
+            } else if (mode === 'hpf_only') {
+                badge.textContent = 'HPF Only (' + curCutoff + 'Hz)';
+                badge.style.background = 'var(--pill-neutral-bg)';
+                badge.style.color = 'var(--accent)';
+            } else {
+                badge.textContent = 'Bypassed (Raw)';
+                badge.style.background = 'var(--surface-sunken)';
+                badge.style.color = 'var(--warning)';
+            }
+        }
+
+        if (timeEl && dsp.avg_process_us !== undefined) {
+            timeEl.textContent = (dsp.avg_process_us ? dsp.avg_process_us.toFixed(0) : '0') + ' μs / frame';
+        }
+        if (cpuEl && dsp.cpu_pct_core !== undefined) {
+            cpuEl.textContent = dsp.cpu_pct_core.toFixed(2) + ' % of 1 core';
+        }
+        if (speexEl) {
+            speexEl.textContent = dsp.speex_enabled
+                ? ('Denoise: ' + curSupp + ' dB · AGC: Off · VAD: Off')
+                : 'Bypassed / Inactive';
+        }
+        if (hpfEl) {
+            hpfEl.textContent = dsp.hpf_enabled
+                ? ('2nd-order Butterworth IIR · ' + curCutoff + ' Hz')
+                : 'Bypassed / Inactive';
+        }
+    }
 
     // Fullscreen toggle
     if (fullscreenBtn) {
@@ -2870,6 +3050,102 @@ public:
             }
         });
 
+        _server->Get("/api/audio_dsp", [this](const httplib::Request& req, httplib::Response& res) {
+            if (_audio_dsp) {
+                res.set_content(_audio_dsp->get_metrics_json(), "application/json; charset=utf-8");
+            } else {
+                res.set_content("{\"status\":\"no_dsp\"}", "application/json; charset=utf-8");
+            }
+        });
+
+        _server->Post("/api/audio_dsp", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!_audio_dsp) {
+                res.set_content("{\"status\":\"error\",\"message\":\"dsp_not_available\"}", "application/json; charset=utf-8");
+                return;
+            }
+            std::string mode_str;
+            if (req.has_param("mode")) {
+                mode_str = req.get_param_value("mode");
+            } else if (!req.body.empty()) {
+                if (req.body.find("\"mode\":\"bypass\"") != std::string::npos || req.body.find("mode=bypass") != std::string::npos) {
+                    mode_str = "bypass";
+                } else if (req.body.find("\"mode\":\"hpf_only\"") != std::string::npos || req.body.find("mode=hpf_only") != std::string::npos) {
+                    mode_str = "hpf_only";
+                } else if (req.body.find("\"mode\":\"full\"") != std::string::npos || req.body.find("mode=full") != std::string::npos) {
+                    mode_str = "full";
+                }
+            }
+            if (mode_str == "bypass") {
+                _audio_dsp->set_mode(maix::webrtc::UplinkDspMode::BYPASS);
+            } else if (mode_str == "hpf_only") {
+                _audio_dsp->set_mode(maix::webrtc::UplinkDspMode::HPF_ONLY);
+            } else if (mode_str == "full") {
+                _audio_dsp->set_mode(maix::webrtc::UplinkDspMode::FULL);
+            }
+
+            // Parse HPF cutoff frequency
+            if (req.has_param("hpf_cutoff")) {
+                try {
+                    float cutoff = std::stof(req.get_param_value("hpf_cutoff"));
+                    _audio_dsp->set_hpf_cutoff(cutoff);
+                } catch (...) {}
+            } else if (req.has_param("cutoff_hz")) {
+                try {
+                    float cutoff = std::stof(req.get_param_value("cutoff_hz"));
+                    _audio_dsp->set_hpf_cutoff(cutoff);
+                } catch (...) {}
+            } else if (!req.body.empty()) {
+                auto find_val = [&](const std::string& key) -> float {
+                    auto p = req.body.find(key);
+                    if (p != std::string::npos) {
+                        p += key.size();
+                        while (p < req.body.size() && (req.body[p] == '=' || req.body[p] == ':' || req.body[p] == ' ' || req.body[p] == '\"')) ++p;
+                        size_t end = p;
+                        while (end < req.body.size() && (std::isdigit(req.body[end]) || req.body[end] == '.' || req.body[end] == '-')) ++end;
+                        if (end > p) {
+                            try { return std::stof(req.body.substr(p, end - p)); } catch (...) {}
+                        }
+                    }
+                    return -999.0f;
+                };
+                float c = find_val("hpf_cutoff");
+                if (c < 0) c = find_val("cutoff_hz");
+                if (c > 0) _audio_dsp->set_hpf_cutoff(c);
+            }
+
+            // Parse Speex suppression level
+            if (req.has_param("speex_suppress")) {
+                try {
+                    int suppress = std::stoi(req.get_param_value("speex_suppress"));
+                    _audio_dsp->set_speex_suppression(suppress);
+                } catch (...) {}
+            } else if (req.has_param("suppress_db")) {
+                try {
+                    int suppress = std::stoi(req.get_param_value("suppress_db"));
+                    _audio_dsp->set_speex_suppression(suppress);
+                } catch (...) {}
+            } else if (!req.body.empty()) {
+                auto find_int = [&](const std::string& key) -> int {
+                    auto p = req.body.find(key);
+                    if (p != std::string::npos) {
+                        p += key.size();
+                        while (p < req.body.size() && (req.body[p] == '=' || req.body[p] == ':' || req.body[p] == ' ' || req.body[p] == '\"')) ++p;
+                        size_t end = p;
+                        while (end < req.body.size() && (std::isdigit(req.body[end]) || req.body[end] == '-')) ++end;
+                        if (end > p) {
+                            try { return std::stoi(req.body.substr(p, end - p)); } catch (...) {}
+                        }
+                    }
+                    return 999;
+                };
+                int s = find_int("speex_suppress");
+                if (s == 999) s = find_int("suppress_db");
+                if (s != 999) _audio_dsp->set_speex_suppression(s);
+            }
+
+            res.set_content(_audio_dsp->get_metrics_json(), "application/json; charset=utf-8");
+        });
+
         _server->Get("/api/talk", [this](const httplib::Request& req, httplib::Response& res) {
             if (req.has_param("active")) {
                 bool act = (req.get_param_value("active") == "1" || req.get_param_value("active") == "true");
@@ -2953,5 +3229,9 @@ public:
 
     void set_talk_callback(std::function<void(bool)> cb) {
         _talk_callback = std::move(cb);
+    }
+
+    void set_audio_dsp(std::shared_ptr<maix::webrtc::MaixAudioUplinkDSP> dsp) {
+        _audio_dsp = dsp;
     }
 };

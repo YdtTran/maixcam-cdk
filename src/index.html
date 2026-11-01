@@ -991,6 +991,69 @@
                             <button class="btn-action-sm" onclick="resetGateDefaultsUI()" style="height:26px; padding:0 12px;" title="Reset parameters to defaults">Reset to Defaults</button>
                         </div>
                     </div>
+
+                    <!-- Native MaixCAM Uplink Noise Suppression Card -->
+                    <div style="background:var(--raised); border:1px solid var(--border); border-radius:var(--radius-card); padding:10px 12px; display:flex; flex-direction:column; gap:10px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <div>
+                                <span style="font-weight:600; font-size:12px; color:var(--text);">3. Native MaixCAM Uplink Noise Suppression</span>
+                                <div style="font-size:10px; color:var(--muted); line-height:1.3; margin-top:2px;">
+                                    MaixCAM Mic &rarr; PCM Capture &rarr; HPF (50 Hz) &rarr; SpeexDSP (-6 dB) &rarr; Opus WebRTC &rarr; PC Browser
+                                </div>
+                            </div>
+                            <span id="uplink-dsp-badge" class="meta-chip tabular" style="background:var(--pill-positive-bg); color:var(--pill-positive-ink); font-weight:600;">HPF + SpeexDSP</span>
+                        </div>
+
+                        <!-- Mode Selector for A/B Testing -->
+                        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                            <span style="font-size:11px; color:var(--muted); font-weight:600;">A/B Mode:</span>
+                            <button id="uplink-btn-full" class="btn-action-sm" onclick="setUplinkDspModeUI('full')" style="height:26px; padding:0 8px; font-weight:600; border-color:var(--positive);" title="HPF + SpeexDSP (Default)">HPF + SpeexDSP</button>
+                            <button id="uplink-btn-hpf" class="btn-action-sm" onclick="setUplinkDspModeUI('hpf_only')" style="height:26px; padding:0 8px; font-weight:600;" title="High-Pass Filter only">HPF Only</button>
+                            <button id="uplink-btn-bypass" class="btn-action-sm" onclick="setUplinkDspModeUI('bypass')" style="height:26px; padding:0 8px; font-weight:600;" title="Raw microphone capture bypass">Bypass (Raw Mic)</button>
+                        </div>
+
+                        <!-- Speex Suppression Level Selector -->
+                        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                            <span style="font-size:11px; color:var(--muted); font-weight:600;">Speex Suppression:</span>
+                            <button id="uplink-btn-supp-6" class="btn-action-sm" onclick="setUplinkDspSuppressionUI(-6)" style="height:24px; padding:0 8px; font-weight:600; border-color:var(--positive);" title="-6 dB: Gentle suppression, maximum musical transparency">-6 dB (Default)</button>
+                            <button id="uplink-btn-supp-9" class="btn-action-sm" onclick="setUplinkDspSuppressionUI(-9)" style="height:24px; padding:0 8px; font-weight:600;" title="-9 dB: Balanced suppression">-9 dB</button>
+                            <button id="uplink-btn-supp-12" class="btn-action-sm" onclick="setUplinkDspSuppressionUI(-12)" style="height:24px; padding:0 8px; font-weight:600;" title="-12 dB: Strong background reduction">-12 dB</button>
+                            <button id="uplink-btn-supp-15" class="btn-action-sm" onclick="setUplinkDspSuppressionUI(-15)" style="height:24px; padding:0 8px; font-weight:600;" title="-15 dB: Aggressive environmental denoise">-15 dB</button>
+                            <button id="uplink-btn-supp-18" class="btn-action-sm" onclick="setUplinkDspSuppressionUI(-18)" style="height:24px; padding:0 8px; font-weight:600;" title="-18 dB: Deep suppression for high-noise environments">-18 dB</button>
+                            <button id="uplink-btn-supp-21" class="btn-action-sm" onclick="setUplinkDspSuppressionUI(-21)" style="height:24px; padding:0 8px; font-weight:600;" title="-21 dB: Maximum suppression for extreme noise">-21 dB</button>
+                        </div>
+
+                        <!-- HPF Cutoff Frequency Selector -->
+                        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                            <span style="font-size:11px; color:var(--muted); font-weight:600;">HPF Cutoff:</span>
+                            <button id="uplink-btn-hpf-50" class="btn-action-sm" onclick="setUplinkDspCutoffUI(50)" style="height:24px; padding:0 8px; font-weight:600; border-color:var(--positive);" title="50 Hz: Standard rumble filter, preserves musical bass">50 Hz (Default / Music)</button>
+                            <button id="uplink-btn-hpf-80" class="btn-action-sm" onclick="setUplinkDspCutoffUI(80)" style="height:24px; padding:0 8px; font-weight:600;" title="80 Hz: Voice mode, cuts ambient room rumble below 80 Hz">80 Hz (Voice Mode)</button>
+                        </div>
+
+                        <!-- Metrics & Telemetry Grid -->
+                        <div class="spec-list" style="margin-top:2px;">
+                            <div class="spec-row">
+                                <span class="spec-name">High-Pass Filter</span>
+                                <span id="uplink-dsp-hpf" class="spec-val tabular">2nd-order Butterworth IIR · 50 Hz</span>
+                            </div>
+                            <div class="spec-row">
+                                <span class="spec-name">SpeexDSP Preprocessor</span>
+                                <span id="uplink-dsp-speex" class="spec-val tabular">Denoise: -6 dB · AGC: Off · VAD: Off</span>
+                            </div>
+                            <div class="spec-row">
+                                <span class="spec-name">Accumulator & Frame</span>
+                                <span id="uplink-dsp-frame" class="spec-val tabular">20 ms (960 samples @ 48 kHz mono)</span>
+                            </div>
+                            <div class="spec-row">
+                                <span class="spec-name">DSP Execution Time</span>
+                                <span id="uplink-dsp-time" class="spec-val tabular">-- &mu;s / frame</span>
+                            </div>
+                            <div class="spec-row">
+                                <span class="spec-name">DSP CPU Load</span>
+                                <span id="uplink-dsp-cpu" class="spec-val tabular">-- % of 1 core</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <div id="tab-hw-content" style="display:none; flex-direction:column; flex:1; min-height:0;">

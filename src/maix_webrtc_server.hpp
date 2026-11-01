@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include "g4c4_opus_rx.hpp"
+#include "maix_webrtc_audio_dsp.hpp"
 #include "rtc/rtc.hpp"
 #include "nlohmann/json.hpp"
 #include "maix_webrtc_signaling_server.hpp"
@@ -46,6 +47,7 @@ private:
     std::shared_ptr<rtc::Track> _audio_track;
     std::shared_ptr<G4c4OpusRx> _audio_rx;
     std::shared_ptr<G4c4BtPlayback> _shared_playback;
+    std::shared_ptr<maix::webrtc::MaixAudioUplinkDSP> _audio_dsp;
     std::shared_ptr<rtc::RtpPacketizationConfig> _video_rtp_config;
     std::shared_ptr<rtc::RtpPacketizationConfig> _audio_rtp_config;
 
@@ -83,9 +85,9 @@ private:
 
 public:
     MaixWebRTCServer(int *clients, std::shared_ptr<rtc::PeerConnection> peer_connection, bool has_audio, VideoCodec video_codec = VideoCodec::H264)
-        : clients(clients), _peer_connection(peer_connection), _has_audio(has_audio), _video_codec(video_codec), _is_running(false), _send_thread(nullptr),
-          _client_id("server"), _offer_sent(false), _use_builtin_signaling(false), _use_http_server(false),
-          _shared_playback(std::make_shared<G4c4BtPlayback>())
+        : _shared_playback(std::make_shared<G4c4BtPlayback>()),
+          clients(clients), _peer_connection(peer_connection), _has_audio(has_audio), _video_codec(video_codec), _is_running(false), _send_thread(nullptr),
+          _client_id("server"), _offer_sent(false), _use_builtin_signaling(false), _use_http_server(false)
     {
         if (clients != nullptr) {
             *clients = 0;
@@ -509,6 +511,19 @@ public:
         }
         root["uplink"] = up;
 
+        std::shared_ptr<maix::webrtc::MaixAudioUplinkDSP> dsp;
+        {
+            std::lock_guard<std::mutex> lock(_media_mutex);
+            dsp = _audio_dsp;
+        }
+        if (dsp) {
+            try {
+                root["uplink_dsp"] = json::parse(dsp->get_metrics_json());
+            } catch (...) {
+                root["uplink_dsp"] = dsp->get_metrics_json();
+            }
+        }
+
         // Downlink stats
         std::shared_ptr<G4c4OpusRx> rx;
         {
@@ -613,6 +628,21 @@ public:
         }
 
         return root.dump();
+    }
+
+    void set_audio_dsp(std::shared_ptr<maix::webrtc::MaixAudioUplinkDSP> dsp) {
+        {
+            std::lock_guard<std::mutex> lock(_media_mutex);
+            _audio_dsp = dsp;
+        }
+        if (_http_server) {
+            _http_server->set_audio_dsp(dsp);
+        }
+    }
+
+    std::shared_ptr<maix::webrtc::MaixAudioUplinkDSP> get_audio_dsp() {
+        std::lock_guard<std::mutex> lock(_media_mutex);
+        return _audio_dsp;
     }
 
     std::string get_local_description() {
@@ -938,6 +968,9 @@ public:
         // Start HTTP server if enabled
         if (_enable_http_server) {
             new_server->_http_server = std::make_shared<MaixWebRTCHttpServer>(_http_host, _http_port, _stun_server, _ws_port);
+            if (new_server->_audio_dsp) {
+                new_server->_http_server->set_audio_dsp(new_server->_audio_dsp);
+            }
             new_server->_http_server->set_metrics_callback([new_server]() {
                 return new_server->get_audio_metrics_json();
             });

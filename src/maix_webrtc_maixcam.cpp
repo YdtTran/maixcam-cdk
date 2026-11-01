@@ -16,6 +16,7 @@
 #include "maix_audio.hpp"
 #include "sophgo_middleware.hpp"
 #include "maix_webrtc_server.hpp"
+#include "maix_webrtc_audio_dsp.hpp"
 #include "nlohmann/json.hpp"
 #include <vector>
 #include <string>
@@ -178,6 +179,7 @@ namespace maix::webrtc
         int gop;
 
         MaixWebRTCServer *webrtc_server;
+        std::shared_ptr<maix::webrtc::MaixAudioUplinkDSP> audio_dsp;
 #ifdef MAIX_WEBRTC_G4A_TONE
         std::thread *tone_thread;
 #endif
@@ -365,10 +367,18 @@ namespace maix::webrtc
         opus_encoder_ctl(encoder.get(), OPUS_SET_BITRATE(24000));
         opus_encoder_ctl(encoder.get(), OPUS_SET_COMPLEXITY(5));
 
+        auto dsp = param->audio_dsp;
+        if (!dsp) {
+            dsp = std::make_shared<maix::webrtc::MaixAudioUplinkDSP>();
+            param->audio_dsp = dsp;
+            if (param->webrtc_server) {
+                param->webrtc_server->set_audio_dsp(dsp);
+            }
+        }
+
         std::array<opus_int16, frame_samples> pcm{};
         std::array<unsigned char, 1275> encoded{};
 
-        size_t filled = 0;
         uint64_t sample_cursor = 0;
 
         unsigned sent = 0;
@@ -389,9 +399,9 @@ namespace maix::webrtc
             const auto gap_us = std::chrono::duration_cast<
                 std::chrono::microseconds>(now - last_capture).count();
             const uint64_t lost = static_cast<uint64_t>(gap_us) * rate / 1000000
-                                + filled / sizeof(opus_int16);
+                                + (dsp ? dsp->queued_bytes() : 0) / sizeof(opus_int16);
             sample_cursor += ((lost + frame_samples - 1) / frame_samples) * frame_samples;
-            filled = 0;
+            if (dsp) dsp->reset();
             log::warn("G4c resetting stalled onboard PCM, attempt=%u", recovery_attempts);
             try {
                 recorder->reset(true); // Same capture handle; no competing device owner.
@@ -405,7 +415,7 @@ namespace maix::webrtc
         };
 
 
-        log::info("G4b microphone capture started: 48000 Hz mono");
+        log::info("G4b microphone capture started: 48000 Hz mono (DSP active)");
 
         while (param->status == WEBRTC_RUNNING && !app::need_exit()) {
             const bool track_open =
@@ -414,11 +424,11 @@ namespace maix::webrtc
 
             // Do not preserve partial frames across connection changes.
             if (track_open != previous_open) {
-                filled = 0;
+                if (dsp) dsp->reset();
                 previous_open = track_open;
             }
 
-            const size_t wanted = frame_bytes - filled;
+            const size_t wanted = frame_bytes;
             std::unique_ptr<maix::Bytes> chunk;
 
             try {
@@ -450,7 +460,7 @@ namespace maix::webrtc
                 continue;
             }
 
-            if (n > wanted || n % sizeof(opus_int16) != 0) {
+            if (n % sizeof(opus_int16) != 0) {
                 log::error("G4b invalid PCM read size: %zu", n);
                 break;
             }
@@ -458,54 +468,47 @@ namespace maix::webrtc
             last_capture = std::chrono::steady_clock::now();
             recovery_attempts = 0;
 
-            std::memcpy(
-                reinterpret_cast<unsigned char *>(pcm.data()) + filled,
-                chunk->data,
-                n
-            );
+            dsp->ingest_bytes(chunk->data, n);
 
-            filled += n;
+            while (dsp->has_frame()) {
+                if (!dsp->pop_and_process_frame(pcm.data())) break;
 
-            if (filled < frame_bytes)
-                continue;
+                if (track_open &&
+                    param->webrtc_server &&
+                    param->webrtc_server->is_audio_track_open()) {
 
-            filled = 0;
-
-            if (track_open &&
-                param->webrtc_server &&
-                param->webrtc_server->is_audio_track_open()) {
-
-                int size = opus_encode(
-                    encoder.get(),
-                    pcm.data(),
-                    frame_samples,
-                    encoded.data(),
-                    static_cast<opus_int32>(encoded.size())
-                );
-
-                if (size > 0 &&
-                    param->webrtc_server->audio_frame_push(
+                    int size = opus_encode(
+                        encoder.get(),
+                        pcm.data(),
+                        frame_samples,
                         encoded.data(),
-                        static_cast<size_t>(size),
-                        sample_cursor
-                    ) == 0) {
-                    ++sent;
+                        static_cast<opus_int32>(encoded.size())
+                    );
+
+                    if (size > 0 &&
+                        param->webrtc_server->audio_frame_push(
+                            encoded.data(),
+                            static_cast<size_t>(size),
+                            sample_cursor
+                        ) == 0) {
+                        ++sent;
+                    } else {
+                        ++failed;
+                    }
                 } else {
-                    ++failed;
+                    ++dropped;
                 }
-            } else {
-                ++dropped;
-            }
 
-            // RTP audio timestamp advances by captured sample count.
-            sample_cursor += frame_samples;
+                // RTP audio timestamp advances by captured sample count.
+                sample_cursor += frame_samples;
 
-            if ((sent + failed) != 0 &&
-                (sent + failed) % 250 == 0) {
-                log::info(
-                    "G4b mic sent=%u failed=%u dropped=%u",
-                    sent, failed, dropped
-                );
+                if ((sent + failed) != 0 &&
+                    (sent + failed) % 250 == 0) {
+                    log::info(
+                        "G4b mic sent=%u failed=%u dropped=%u",
+                        sent, failed, dropped
+                    );
+                }
             }
         }
 
@@ -571,6 +574,7 @@ namespace maix::webrtc
         param->gop = gop;
 
         param->webrtc_server = nullptr;
+        param->audio_dsp = std::make_shared<maix::webrtc::MaixAudioUplinkDSP>();
 #ifdef MAIX_WEBRTC_G4A_TONE
         param->tone_thread = nullptr;
 #endif
@@ -669,6 +673,10 @@ namespace maix::webrtc
         if (!param->webrtc_server) {
             log::error("Failed to create WebRTC server");
             return err::ERR_RUNTIME;
+        }
+
+        if (param->audio_dsp && param->webrtc_server) {
+            param->webrtc_server->set_audio_dsp(param->audio_dsp);
         }
 
         if (!param->webrtc_server->connect_signaling(this->_signaling_ip, this->_signaling_port)) {

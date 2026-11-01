@@ -878,11 +878,126 @@ registerProcessor('noise-gate-processor', NoiseGateProcessor);
                     if (elUnder) elUnder.textContent = underruns + ' underruns';
                 }
             }
+
+            if (data.uplink_dsp) {
+                updateUplinkDspUI(data.uplink_dsp);
+            }
         } catch (e) {
             // Server temporarily unreachable or rebooting
         }
     }
     setInterval(pollTelemetry, 1500);
+
+    window.setUplinkDspModeUI = async function(mode) {
+        try {
+            const res = await fetch('/api/audio_dsp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'mode=' + encodeURIComponent(mode)
+            });
+            if (res.ok) {
+                const data = await res.json();
+                updateUplinkDspUI(data);
+            }
+        } catch (e) {
+            console.warn('[Audio] Failed to set uplink DSP mode:', e);
+        }
+    };
+
+    window.setUplinkDspSuppressionUI = async function(db) {
+        try {
+            const res = await fetch('/api/audio_dsp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'speex_suppress=' + encodeURIComponent(db)
+            });
+            if (res.ok) {
+                const data = await res.json();
+                updateUplinkDspUI(data);
+            }
+        } catch (e) {
+            console.warn('[Audio] Failed to set uplink suppression level:', e);
+        }
+    };
+
+    window.setUplinkDspCutoffUI = async function(hz) {
+        try {
+            const res = await fetch('/api/audio_dsp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'hpf_cutoff=' + encodeURIComponent(hz)
+            });
+            if (res.ok) {
+                const data = await res.json();
+                updateUplinkDspUI(data);
+            }
+        } catch (e) {
+            console.warn('[Audio] Failed to set uplink HPF cutoff:', e);
+        }
+    };
+
+    function updateUplinkDspUI(dsp) {
+        if (!dsp) return;
+        const mode = dsp.mode || 'full';
+        const badge = document.getElementById('uplink-dsp-badge');
+        const btnFull = document.getElementById('uplink-btn-full');
+        const btnHpf = document.getElementById('uplink-btn-hpf');
+        const btnBypass = document.getElementById('uplink-btn-bypass');
+        const timeEl = document.getElementById('uplink-dsp-time');
+        const cpuEl = document.getElementById('uplink-dsp-cpu');
+        const speexEl = document.getElementById('uplink-dsp-speex');
+        const hpfEl = document.getElementById('uplink-dsp-hpf');
+
+        if (btnFull) btnFull.style.borderColor = (mode === 'full') ? 'var(--positive)' : 'var(--border)';
+        if (btnHpf) btnHpf.style.borderColor = (mode === 'hpf_only') ? 'var(--accent)' : 'var(--border)';
+        if (btnBypass) btnBypass.style.borderColor = (mode === 'bypass') ? 'var(--warning)' : 'var(--border)';
+
+        const curSupp = dsp.speex_suppress_db !== undefined ? dsp.speex_suppress_db : -6;
+        const curCutoff = dsp.hpf_cutoff_hz !== undefined ? Math.round(dsp.hpf_cutoff_hz) : 50;
+
+        [-6, -9, -12, -15, -18, -21].forEach(db => {
+            const btn = document.getElementById('uplink-btn-supp-' + Math.abs(db));
+            if (btn) btn.style.borderColor = (curSupp === db) ? 'var(--positive)' : 'var(--border)';
+        });
+
+        [50, 80].forEach(hz => {
+            const btn = document.getElementById('uplink-btn-hpf-' + hz);
+            if (btn) btn.style.borderColor = (curCutoff === hz) ? 'var(--positive)' : 'var(--border)';
+        });
+
+        if (badge) {
+            if (mode === 'full') {
+                badge.textContent = 'HPF + SpeexDSP (' + curSupp + 'dB)';
+                badge.style.background = 'var(--pill-positive-bg)';
+                badge.style.color = 'var(--pill-positive-ink)';
+            } else if (mode === 'hpf_only') {
+                badge.textContent = 'HPF Only (' + curCutoff + 'Hz)';
+                badge.style.background = 'var(--pill-neutral-bg)';
+                badge.style.color = 'var(--accent)';
+            } else {
+                badge.textContent = 'Bypassed (Raw)';
+                badge.style.background = 'var(--surface-sunken)';
+                badge.style.color = 'var(--warning)';
+            }
+        }
+
+        if (timeEl && dsp.avg_process_us !== undefined) {
+            timeEl.textContent = (dsp.avg_process_us ? dsp.avg_process_us.toFixed(0) : '0') + ' μs / frame';
+        }
+        if (cpuEl && dsp.cpu_pct_core !== undefined) {
+            cpuEl.textContent = dsp.cpu_pct_core.toFixed(2) + ' % of 1 core';
+        }
+        if (speexEl) {
+            speexEl.textContent = dsp.speex_enabled
+                ? ('Denoise: ' + curSupp + ' dB · AGC: Off · VAD: Off')
+                : 'Bypassed / Inactive';
+        }
+        if (hpfEl) {
+            hpfEl.textContent = dsp.hpf_enabled
+                ? ('2nd-order Butterworth IIR · ' + curCutoff + ' Hz')
+                : 'Bypassed / Inactive';
+        }
+    }
 
     // Fullscreen toggle
     if (fullscreenBtn) {
