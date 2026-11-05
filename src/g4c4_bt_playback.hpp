@@ -35,6 +35,8 @@ public:
     static constexpr unsigned int CHANNELS = 2;
 
     struct Stats {
+        unsigned sample_rate = 0;
+        unsigned channels = 0;
         uint64_t frames_written = 0;
         uint64_t dropped_overflow = 0;
         uint64_t dropped_busy = 0;
@@ -54,6 +56,9 @@ public:
 
     explicit G4c4BtPlayback(const char* device_name = nullptr)
         : device_name_(device_name ? device_name : default_device())
+        , native_sco_(device_name_.find("PROFILE=sco") != std::string::npos)
+        , sample_rate_(native_sco_ ? 8000 : SAMPLE_RATE)
+        , channels_(native_sco_ ? 1 : CHANNELS)
         , worker_(&G4c4BtPlayback::worker_loop, this) {
     }
 
@@ -107,13 +112,15 @@ public:
         return talk_active_;
     }
 
+    bool uses_native_sco() const { return native_sco_; }
+
     /**
-     * @brief Enqueue 48 kHz stereo interleaved S16_LE PCM frames for playback.
+     * @brief Enqueue native S16_LE PCM (8 kHz mono SCO or 48 kHz stereo A2DP).
      *
-     * @param pcm Interleaved S16 samples (num_frames * 2 elements).
-     * @param num_frames Number of stereo frames (pairs of samples).
+     * @param pcm Interleaved S16 samples (num_frames * configured channels).
+     * @param num_frames Number of frames per channel.
      */
-    void enqueue_stereo_pcm(const int16_t* pcm, size_t num_frames) {
+    void enqueue_pcm(const int16_t* pcm, size_t num_frames) {
         if (!pcm || num_frames == 0) return;
 
         std::lock_guard<std::mutex> lock(mutex_);
@@ -128,7 +135,7 @@ public:
         }
 
         Chunk chunk;
-        chunk.samples.assign(pcm, pcm + (num_frames * CHANNELS));
+        chunk.samples.assign(pcm, pcm + (num_frames * channels_));
         chunk.num_frames = num_frames;
 
         queue_.push_back(std::move(chunk));
@@ -161,6 +168,8 @@ public:
 
     Stats get_stats() const {
         Stats s;
+        s.sample_rate = sample_rate_;
+        s.channels = channels_;
         s.frames_written = frames_written_.load(std::memory_order_relaxed);
         s.dropped_overflow = dropped_overflow_.load(std::memory_order_relaxed);
         s.dropped_busy = dropped_busy_.load(std::memory_order_relaxed);
@@ -190,7 +199,7 @@ private:
         if (env && env[0] != '\0') {
             return std::string(env);
         }
-        return "bluealsa:DEV=6C:16:29:7B:00:D4,PROFILE=a2dp";
+        return "bluealsa:DEV=6C:16:29:7B:00:D4,PROFILE=sco";
     }
 
     bool open_device() {
@@ -219,8 +228,8 @@ private:
             err = snd_pcm_set_params(pcm_handle_,
                                      SND_PCM_FORMAT_S16_LE,
                                      SND_PCM_ACCESS_RW_INTERLEAVED,
-                                     CHANNELS,
-                                     SAMPLE_RATE,
+                                     channels_,
+                                     sample_rate_,
                                      1,      // soft_resample allowed
                                      120000); // 120ms latency buffer (resilient to BT/Wi-Fi burst jitter)
             if (err == -EBUSY || err == -EAGAIN) {
@@ -244,8 +253,8 @@ private:
         device_open_count_.fetch_add(1, std::memory_order_relaxed);
         is_device_open_.store(true, std::memory_order_relaxed);
 
-        std::fprintf(stderr, "[G4c4 BT Playback] ALSA playback opened (blocking): %s (48 kHz stereo S16_LE)\n",
-                     device_name_.c_str());
+        std::fprintf(stderr, "[G4c4 BT Playback] ALSA playback opened (blocking): %s (%u Hz / %u channels S16_LE)\n",
+                     device_name_.c_str(), sample_rate_, channels_);
         return true;
     }
 
@@ -344,7 +353,7 @@ private:
 
                 if (written > 0) {
                     frames_written_.fetch_add(written, std::memory_order_relaxed);
-                    ptr += (written * CHANNELS);
+                    ptr += (written * channels_);
                     remaining -= written;
                     eagain_retries = 0;
                 } else if (written == -EAGAIN || written == -EINTR) {
@@ -394,6 +403,9 @@ private:
     }
 
     std::string device_name_;
+    const bool native_sco_;
+    const unsigned sample_rate_;
+    const unsigned channels_;
     snd_pcm_t* pcm_handle_ = nullptr;
     std::chrono::steady_clock::time_point last_open_error_{};
     std::chrono::steady_clock::time_point last_log_error_{};

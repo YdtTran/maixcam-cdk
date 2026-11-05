@@ -12,6 +12,9 @@ cat > "$BACKUP/paths" <<'EOF'
 etc/init.d/S30wifi
 etc/init.d/S30wifi.pre-standalone
 etc/init.d/S99webrtc_autostart
+etc/init.d/S41bluealsa
+etc/init.d/S41bluealsa.before-earbud-mic
+etc/init.d/S41bluealsa.before-sco-align
 etc/maixcam-standalone
 root/webrtc_service.sh
 root/webrtc_autostart_daemon.sh
@@ -75,8 +78,8 @@ cp "$STAGE/services/S30wifi" /etc/init.d/S30wifi
 cp "$STAGE/services/S99webrtc_autostart" /etc/init.d/S99webrtc_autostart
 cp "$STAGE/services/network.sh" /root/maixcam_standalone_network.sh
 cp "$STAGE/services/supervisor.sh" /root/webrtc_autostart_daemon.sh
-# Preserve the known-good service's media environment, gains and BT parameters.
-sed "/^export MAIX_WEBRTC_STANDALONE=/d; /^export MAIX_WEBRTC_TLS_CERT=/d; /^export MAIX_WEBRTC_TLS_KEY=/d; /^export MAIX_WEBRTC_SIGNAL_TOKEN=/d; s|^STAGE=.*|STAGE=\"$STAGE\"|" "$BACKUP/../webrtc_service.original" > /root/webrtc_service.sh
+# Install the versioned media service and apply the standalone TLS environment.
+sed "/^export MAIX_WEBRTC_STANDALONE=/d; /^export MAIX_WEBRTC_TLS_CERT=/d; /^export MAIX_WEBRTC_TLS_KEY=/d; /^export MAIX_WEBRTC_SIGNAL_TOKEN=/d; s|^STAGE=.*|STAGE=\"$STAGE\"|" "$STAGE/webrtc_service.sh" > /root/webrtc_service.sh
 sed -i '/^BIN=/i\export MAIX_WEBRTC_STANDALONE=1\nexport MAIX_WEBRTC_TLS_CERT=/etc/maixcam-standalone/server.crt\nexport MAIX_WEBRTC_TLS_KEY=/etc/maixcam-standalone/server.key\nexport MAIX_WEBRTC_SIGNAL_TOKEN="$(cat /etc/maixcam-standalone/signal-token)"' /root/webrtc_service.sh
 chmod 700 /root/webrtc_service.sh /root/webrtc_autostart_daemon.sh /root/maixcam_standalone_network.sh
 chmod 755 /etc/init.d/S30wifi /etc/init.d/S99webrtc_autostart

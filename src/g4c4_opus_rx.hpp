@@ -60,7 +60,6 @@ public:
         }
         cv_.notify_one();
         if (worker_.joinable()) worker_.join();
-        finalize_downlink_wav();
     }
 
     G4c4OpusRx(const G4c4OpusRx&) = delete;
@@ -170,55 +169,6 @@ private:
         uint8_t payload_type = 0;
     };
 
-    void write_downlink_wav(const int16_t* pcm, size_t num_frames) {
-        if (!pcm || num_frames == 0) return;
-        if (!wav_fp_) {
-            wav_fp_ = std::fopen("/tmp/downlink_pc_to_maix.wav", "wb");
-            if (wav_fp_) {
-                uint8_t hdr[44] = {0};
-                std::fwrite(hdr, 1, 44, wav_fp_);
-                wav_bytes_ = 0;
-            }
-        }
-        if (wav_fp_) {
-            const size_t bytes = num_frames * 2 * sizeof(int16_t);
-            std::fwrite(pcm, 1, bytes, wav_fp_);
-            wav_bytes_ += bytes;
-        }
-    }
-
-    void finalize_downlink_wav() {
-        if (!wav_fp_) return;
-        uint8_t header[44];
-        std::memcpy(header, "RIFF", 4);
-        uint32_t riff_size = static_cast<uint32_t>(wav_bytes_ + 36);
-        std::memcpy(header + 4, &riff_size, 4);
-        std::memcpy(header + 8, "WAVEfmt ", 8);
-        uint32_t fmt_len = 16;
-        std::memcpy(header + 16, &fmt_len, 4);
-        uint16_t fmt_type = 1; // PCM
-        std::memcpy(header + 20, &fmt_type, 2);
-        uint16_t channels = 2; // Stereo
-        std::memcpy(header + 22, &channels, 2);
-        uint32_t rate = 48000;
-        std::memcpy(header + 24, &rate, 4);
-        uint32_t byte_rate = 48000 * 2 * sizeof(int16_t);
-        std::memcpy(header + 28, &byte_rate, 4);
-        uint16_t align = 2 * sizeof(int16_t);
-        std::memcpy(header + 32, &align, 2);
-        uint16_t bits = 16;
-        std::memcpy(header + 34, &bits, 2);
-        std::memcpy(header + 36, "data", 4);
-        uint32_t data_len = static_cast<uint32_t>(wav_bytes_);
-        std::memcpy(header + 40, &data_len, 4);
-
-        std::fseek(wav_fp_, 0, SEEK_SET);
-        std::fwrite(header, 1, sizeof(header), wav_fp_);
-        std::fflush(wav_fp_);
-        std::fclose(wav_fp_);
-        wav_fp_ = nullptr;
-    }
-
     void run() {
         int error = OPUS_OK;
         OpusDecoder* decoder = opus_decoder_create(
@@ -262,14 +212,12 @@ private:
             }
 
             if (do_reset) {
-                finalize_downlink_wav();
                 decoder_resets_.fetch_add(1, std::memory_order_relaxed);
                 opus_decoder_ctl(decoder, OPUS_RESET_STATE);
                 resampler_.reset();
             }
 
             if (packet.bytes.empty()) {
-                finalize_downlink_wav();
                 // Stream idle: notify playback worker to flush any stale tail
                 if (playback_) {
                     playback_->notify_stream_idle();
@@ -300,18 +248,17 @@ private:
             const uint64_t decoded_total = packets_decoded_.fetch_add(1, std::memory_order_relaxed) + 1;
             samples_decoded_.fetch_add(static_cast<uint64_t>(samples), std::memory_order_relaxed);
 
-            // Resample 8 kHz Mono S16 -> 48 kHz Stereo S16_LE
-            resampler_.process(pcm.data(), static_cast<size_t>(samples), stereo_resampled);
-
-            // Record decoded downlink PCM to in-RAM tmpfs
-            write_downlink_wav(stereo_resampled.data(), static_cast<size_t>(samples * G4c4Resampler::RATIO));
-
-            // Forward to dedicated Bluetooth playback worker
-            if (playback_ && talk_active_.load(std::memory_order_relaxed)) {
-                playback_->enqueue_stereo_pcm(
-                    stereo_resampled.data(),
-                    static_cast<size_t>(samples * G4c4Resampler::RATIO)
-                );
+            if (playback_ && playback_->uses_native_sco()) {
+                // CVSD already uses the decoder's 8 kHz mono S16 format.
+                if (talk_active_.load(std::memory_order_relaxed))
+                    playback_->enqueue_pcm(pcm.data(), static_cast<size_t>(samples));
+            } else {
+                // Retain conversion only for explicitly selected A2DP playback.
+                resampler_.process(pcm.data(), static_cast<size_t>(samples), stereo_resampled);
+                if (playback_ && talk_active_.load(std::memory_order_relaxed)) {
+                    playback_->enqueue_pcm(stereo_resampled.data(),
+                        static_cast<size_t>(samples * G4c4Resampler::RATIO));
+                }
             }
 
             if (decoded_total == 1 || decoded_total % 250 == 0) {
@@ -361,9 +308,6 @@ private:
     std::atomic<uint64_t> talk_off_dropped_packets_{0};
     std::atomic<size_t> current_queue_depth_{0};
     std::atomic<size_t> peak_queue_depth_{0};
-
-    FILE* wav_fp_ = nullptr;
-    size_t wav_bytes_ = 0;
 
     std::thread worker_;
 };

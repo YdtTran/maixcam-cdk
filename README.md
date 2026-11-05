@@ -44,11 +44,15 @@ maixcam-webrtc-cockpit/
    - Cảm biến GC4653 $\to$ MMF VPSS $\to$ Mã hóa phần cứng H.264 $\to$ WebRTC Track ($640 \times 480$ @ 30 FPS).
    - Chuẩn hóa góc nhìn thẳng đứng ở $0^\circ$ (baseline crop đều trên/dưới, lấp đầy tỉ lệ 4:3, loại bỏ hoàn toàn viền đen).
    - Hỗ trợ xoay hình ảnh mượt mà qua các góc $0^\circ, 90^\circ, 180^\circ, 270^\circ$ bằng 2D Canvas Compositor (chống hiện tượng màn hình đen DirectComposition trên Chromium).
-2. **Audio Uplink (Micro MaixCAM $\to$ Trình duyệt):**
-   - Card 0 ADC (`cv182xaadc`) $\to$ TinyALSA (`pcmC0D0c`) $\to$ Opus 48 kHz Mono $\to$ WebRTC Audio Track.
+2. **Audio Uplink (Micro tai nghe Bluetooth $\to$ Trình duyệt):**
+   - Micro EDIFIER X2 Plus $\to$ BlueALSA HFP/SCO (`PROFILE=sco`) $\to$ Opus 48 kHz Mono $\to$ WebRTC Audio Track.
 3. **Audio Downlink (Trình duyệt $\to$ Tai nghe Bluetooth):**
-   - Micro trình duyệt $\to$ WebRTC Opus RTP $\to$ `opus_decode()` (8 kHz PCM) $\to$ Resampler $\to$ ALSA BlueALSA A2DP $\to$ Tai nghe Bluetooth (ví dụ: `EDIFIER X2 Plus` tại `6C:16:29:7B:00:D4`).
-   - Độc lập hoàn toàn với luồng Video: ngắt kết nối Bluetooth không bao giờ làm gián đoạn Video hoặc Mic.
+   - Micro trình duyệt $\to$ WebRTC Opus RTP $\to$ `opus_decode()` (8 kHz mono PCM) $\to$ ALSA BlueALSA HFP/SCO $\to$ Tai nghe Bluetooth (ví dụ: `EDIFIER X2 Plus` tại `6C:16:29:7B:00:D4`).
+   - Ngắt kết nối Bluetooth không làm gián đoạn Video; luồng Mic chờ kết nối lại, không chuyển sang micro MaixCAM.
+   - Cả hai chiều dùng hands-free CVSD (8 kHz trên Bluetooth, chuyển đổi thành 48 kHz PCM trong ứng dụng). Cấu hình BlueALSA cần `-p hfp-ag`; service tự bật cấu hình này.
+   - Có thể đổi PCM thu qua `MAIX_WEBRTC_BT_CAPTURE_DEVICE`; PCM phát qua `MAIX_WEBRTC_BT_DEVICE`. Mặc định cả hai trỏ đến EDIFIER X2 Plus với `PROFILE=sco`.
+   - Audio không dùng bộ lọc phần mềm: không HPF, Speex denoise, noise gate, echo cancellation hoặc auto gain control. Trình duyệt gửi trực tiếp track micro; PCM tai nghe được chuyển thẳng vào Opus.
+   - BlueALSA 4.1.1: service nạp `libg4c4_sco_write_align.so` riêng cho daemon để giữ nguyên ranh giới mẫu S16 khi SCO MTU lẻ (255 byte). Không thay đổi cấu hình HCI hay đường thu micro. Build script tự biên dịch thư viện tương thích này.
 4. **Operator Cockpit:**
    - Call dock điều khiển Talk / Listen / Rotate / Snapshot / Session Recording / Fullscreen.
    - Recordings Vault: quản lý, phát lại và xóa các tệp âm thanh ghi âm tại hiện trường.

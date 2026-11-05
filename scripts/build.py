@@ -51,6 +51,17 @@ def main():
         print(f"ERROR: Toolchain binaries missing in {compiler.parent}", file=sys.stderr)
         sys.exit(1)
 
+    print("0. Building BlueALSA CVSD sample-alignment compatibility library...")
+    shim_out = BUILD / "dl_lib/libg4c4_sco_write_align.so"
+    shim_out.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([
+        str(compiler.with_name("riscv64-unknown-linux-musl-gcc")),
+        "-shared", "-fPIC", "-O2", "-mcpu=c906fdv",
+        "-march=rv64imafdcv0p7xthead", "-mcmodel=medany", "-mabi=lp64d",
+        str(ROOT / "src/g4c4_sco_write_align.c"), "-ldl", "-pthread",
+        "-o", str(shim_out)
+    ], check=True)
+
     print("1. Compiling C++ candidate object...")
     compile_cmd = list(meta["compile_argv"])
     src_idx = compile_cmd.index("-c") + 1
@@ -61,43 +72,10 @@ def main():
     src_inc = str(ROOT / "src")
     base_cdk = Path.home() / "maixcam-build/MaixCDK-opus-g4a"
     alsa_inc = str(base_cdk / "components/3rd_party/alsa_lib/include")
-    speex_root = Path.home() / "maixcam-build/speexdsp"
-    speex_inc = str(speex_root / "include")
-    speex_archive = BUILD / "libspeexdsp.a"
-
-    if not speex_archive.is_file():
-        print("Building libspeexdsp.a for RISC-V...")
-        gcc = compiler.with_name("riscv64-unknown-linux-musl-gcc")
-        c_flags = [
-            "-mcpu=c906fdv", "-march=rv64imafdcv0p7xthead", "-mcmodel=medany",
-            "-mabi=lp64d", "-fPIC", "-O3", "-DNDEBUG", "-DHAVE_CONFIG_H", "-DFLOATING_POINT=1"
-        ]
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp_speex:
-            src_files = [
-                "preprocess.c", "filterbank.c", "fftwrap.c",
-                "smallft.c", "buffer.c", "scal.c", "mdf.c"
-            ]
-            obj_files = []
-            for sf in src_files:
-                obj_file = Path(tmp_speex) / f"{sf}.o"
-                obj_files.append(str(obj_file))
-                cmd = [
-                    str(gcc), *c_flags,
-                    f"-I{speex_root}", f"-I{speex_inc}", f"-I{speex_root}/include/speex",
-                    "-c", str(speex_root / "libspeexdsp" / sf),
-                    "-o", str(obj_file)
-                ]
-                subprocess.run(cmd, check=True)
-            subprocess.run([str(ar), "rcs", str(speex_archive), *obj_files], check=True)
-        print(f"libspeexdsp.a built ({speex_archive.stat().st_size} bytes)")
-
     if f"-I{src_inc}" not in compile_cmd:
         compile_cmd.insert(4, f"-I{src_inc}")
     if f"-I{alsa_inc}" not in compile_cmd:
         compile_cmd.insert(5, f"-I{alsa_inc}")
-    if f"-I{speex_inc}" not in compile_cmd:
-        compile_cmd.insert(6, f"-I{speex_inc}")
 
     with COMPILE_LOG.open("w") as out:
         res = subprocess.run(compile_cmd, cwd=base_cdk / "examples/stream_webrtc/build", stdout=out, stderr=subprocess.STDOUT)
@@ -132,7 +110,6 @@ def main():
     alsa_lib_dir = str(base_cdk / "components/3rd_party/alsa_lib/lib/maixcam")
     link_cmd.append(f"-L{alsa_lib_dir}")
     link_cmd.append("-lasound")
-    link_cmd.append(str(speex_archive))
 
     if BIN_OUT.exists():
         BIN_OUT.unlink()

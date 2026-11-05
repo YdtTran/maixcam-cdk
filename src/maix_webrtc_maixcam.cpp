@@ -17,6 +17,7 @@
 #include "sophgo_middleware.hpp"
 #include "maix_webrtc_server.hpp"
 #include "maix_webrtc_audio_dsp.hpp"
+#include "g4c4_bt_capture.hpp"
 #include "nlohmann/json.hpp"
 #include <vector>
 #include <string>
@@ -323,31 +324,19 @@ namespace maix::webrtc
         log::info("G4a tone stopped, sent=%u failed=%u", sent, failed);
     }
 
-    // G4b experimental onboard microphone source.
+    // Bluetooth earbuds microphone source (hands-free CVSD).
     // Captures continuously, including when no peer is connected,
     // to avoid sending stale PCM following a reconnect.
     static void _opus_mic_thread(webrtc_param_t *param)
     {
         constexpr int rate = 48000;
         constexpr int frame_samples = 960;
-        constexpr size_t frame_bytes = frame_samples * sizeof(opus_int16);
 
-        std::unique_ptr<audio::Recorder> recorder;
-
+        std::unique_ptr<G4c4BtCapture> recorder;
         try {
-            recorder.reset(new audio::Recorder(
-                "", rate, audio::Format::FMT_S16_LE, 1, false
-            ));
-
-            if (recorder->frame_size(frame_samples) !=
-                static_cast<int>(frame_bytes)) {
-                log::error("G4b unexpected microphone PCM format");
-                return;
-            }
-
-            recorder->reset(true);
+            recorder.reset(new G4c4BtCapture());
         } catch (const std::exception &e) {
-            log::error("G4b microphone initialization: %s", e.what());
+            log::error("Bluetooth microphone initialization: %s", e.what());
             return;
         }
 
@@ -391,10 +380,7 @@ namespace maix::webrtc
         auto recover_capture = [&]() -> bool {
             if (app::need_exit() || param->status != WEBRTC_RUNNING)
                 return false;
-            if (++recovery_attempts > 3) {
-                log::error("G4c PCM recovery exhausted");
-                return false;
-            }
+            ++recovery_attempts;
             const auto now = std::chrono::steady_clock::now();
             const auto gap_us = std::chrono::duration_cast<
                 std::chrono::microseconds>(now - last_capture).count();
@@ -402,9 +388,12 @@ namespace maix::webrtc
                                 + (dsp ? dsp->queued_bytes() : 0) / sizeof(opus_int16);
             sample_cursor += ((lost + frame_samples - 1) / frame_samples) * frame_samples;
             if (dsp) dsp->reset();
-            log::warn("G4c resetting stalled onboard PCM, attempt=%u", recovery_attempts);
+            log::warn("G4c resetting stalled Bluetooth PCM, attempt=%u", recovery_attempts);
             try {
-                recorder->reset(true); // Same capture handle; no competing device owner.
+                recorder->reset();
+                // Retry Bluetooth capture without stopping video when earbuds
+                // disconnect or have not connected yet at service startup.
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 opus_encoder_ctl(encoder.get(), OPUS_RESET_STATE);
                 last_capture = std::chrono::steady_clock::now();
                 return true;
@@ -415,7 +404,7 @@ namespace maix::webrtc
         };
 
 
-        log::info("G4b microphone capture started: 48000 Hz mono (DSP active)");
+        log::info("Bluetooth microphone worker started: 48000 Hz mono (hands-free, raw audio)");
 
         while (param->status == WEBRTC_RUNNING && !app::need_exit()) {
             const bool track_open =
@@ -428,15 +417,11 @@ namespace maix::webrtc
                 previous_open = track_open;
             }
 
-            const size_t wanted = frame_bytes;
-            std::unique_ptr<maix::Bytes> chunk;
-
+            const std::vector<int16_t> *chunk = nullptr;
             try {
-                chunk.reset(recorder->record_bytes(
-                    static_cast<int>(wanted)
-                ));
+                chunk = &recorder->read();
             } catch (const std::exception &e) {
-                log::error("G4b microphone read: %s", e.what());
+                log::error("Bluetooth microphone read: %s", e.what());
                 if (!recover_capture()) break;
                 continue;
             }
@@ -444,8 +429,7 @@ namespace maix::webrtc
             if (app::need_exit() || param->status != WEBRTC_RUNNING)
                 break;
 
-            const size_t n = chunk && chunk->data
-                ? chunk->data_len : 0;
+            const size_t n = chunk ? chunk->size() * sizeof(int16_t) : 0;
 
             if (n == 0) {
                 if (std::chrono::steady_clock::now() - last_capture >
@@ -468,7 +452,7 @@ namespace maix::webrtc
             last_capture = std::chrono::steady_clock::now();
             recovery_attempts = 0;
 
-            dsp->ingest_bytes(chunk->data, n);
+            dsp->ingest_bytes(reinterpret_cast<const uint8_t *>(chunk->data()), n);
 
             while (dsp->has_frame()) {
                 if (!dsp->pop_and_process_frame(pcm.data())) break;
@@ -701,7 +685,7 @@ namespace maix::webrtc
                         std::getenv("MAIX_WEBRTC_AUDIO_SOURCE");
 
                     if (source && std::strcmp(source, "mic") == 0) {
-                        log::info("G4b audio source: onboard microphone");
+                        log::info("Audio source: Bluetooth earbuds microphone");
                         _opus_mic_thread(p);
                     } else {
                         log::info("G4a audio source: synthetic tone");

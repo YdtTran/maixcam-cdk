@@ -559,6 +559,8 @@ public:
             down["resampler"] = res;
 
             json pb;
+            pb["sample_rate"] = s.playback.sample_rate;
+            pb["channels"] = s.playback.channels;
             pb["frames_written"] = s.playback.frames_written;
             pb["dropped_overflow"] = s.playback.dropped_overflow;
             pb["dropped_busy"] = s.playback.dropped_busy;
@@ -605,6 +607,8 @@ public:
             down["resampler"] = res;
 
             json pb;
+            pb["sample_rate"] = pb_stats.sample_rate;
+            pb["channels"] = pb_stats.channels;
             pb["frames_written"] = pb_stats.frames_written;
             pb["dropped_overflow"] = pb_stats.dropped_overflow;
             pb["dropped_busy"] = pb_stats.dropped_busy;

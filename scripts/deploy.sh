@@ -16,7 +16,9 @@ fi
 
 ACTUAL_SHA="$(sha256sum "$BIN" | awk '{print $1}')"
 SHORT_SHA="${ACTUAL_SHA:0:8}"
-STAGE="/root/g4c4-m2-stage-20261031-$SHORT_SHA"
+SHIM="$DL_LIB/libg4c4_sco_write_align.so"
+SHIM_SHA="$(sha256sum "$SHIM" | awk '{print substr($1,1,8)}')"
+STAGE="/root/g4c4-m2-stage-20261031-$SHORT_SHA-$SHIM_SHA"
 
 echo "Binary SHA256: $ACTUAL_SHA"
 echo "Stage Directory: $STAGE"
@@ -68,6 +70,8 @@ cat "$BIN" | timeout -k 2s 60s ssh -T \
     -o StrictHostKeyChecking=no \
     "$REMOTE" "umask 077; cat > '$STAGE/stream_webrtc-m2'"
 
+scp "$ROOT/target_services/webrtc_service.sh" "$REMOTE:$STAGE/webrtc_service.sh"
+
 echo "5. Verifying and launching service..."
 timeout -k 2s 30s ssh -T \
     -o ConnectTimeout=5 \
@@ -85,17 +89,10 @@ if [ "\$ACTUAL" != "\$EXPECTED_SHA" ]; then
     exit 2
 fi
 
-if [ -f /root/webrtc_service.sh ]; then
-    sed -i "s|^STAGE=.*|STAGE=\"\$STAGE\"|" /root/webrtc_service.sh
-    /root/webrtc_service.sh start
-else
-    cd "\$STAGE"
-    export LD_LIBRARY_PATH="\$STAGE/dl_lib:/usr/lib:/lib"
-    export MAIX_WEBRTC_AUDIO_SOURCE="mic"
-    export MAIX_WEBRTC_BT_DEVICE="bluealsa:DEV=6C:16:29:7B:00:D4,PROFILE=a2dp"
-    nohup "\$BIN" > "\$STAGE/m2_runtime.log" 2>&1 &
-    echo \$! > "\$STAGE/m2.pid"
-fi
+cp "\$STAGE/webrtc_service.sh" /root/webrtc_service.sh
+chmod 700 /root/webrtc_service.sh
+sed -i "s|^STAGE=.*|STAGE=\"\$STAGE\"|" /root/webrtc_service.sh
+/root/webrtc_service.sh start
 
 sleep 2
 PID=\$(cat "\$STAGE/m2.pid" 2>/dev/null || pgrep stream_webrtc-m2 || true)

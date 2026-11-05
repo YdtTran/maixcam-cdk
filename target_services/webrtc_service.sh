@@ -3,6 +3,31 @@ STAGE="/root/g4c4-m2-stage-20261031-dbc06023"
 BIN="$STAGE/stream_webrtc-m2"
 LOG="$STAGE/m2_runtime.log"
 PIDFILE="$STAGE/m2.pid"
+BT_PIDFILE="$STAGE/bt_profile_watch.pid"
+
+connect_bluetooth_mic() {
+    # Generic Connect may restore only A2DP. Request the remote Handsfree
+    # service explicitly so BlueALSA creates the microphone PCM as well.
+    dbus-send --system --print-reply --reply-timeout=3000 --dest=org.bluez \
+        /org/bluez/hci0/dev_6C_16_29_7B_00_D4 \
+        org.bluez.Device1.ConnectProfile \
+        string:0000111e-0000-1000-8000-00805f9b34fb >/dev/null 2>&1 || true
+}
+
+stop_bluetooth_watch() {
+    if [ -f "$BT_PIDFILE" ]; then
+        kill "$(cat "$BT_PIDFILE")" 2>/dev/null || true
+        rm -f "$BT_PIDFILE"
+    fi
+}
+
+watch_bluetooth() {
+    media_pid=$1
+    while kill -0 "$media_pid" 2>/dev/null; do
+        connect_bluetooth_mic
+        sleep 5
+    done
+}
 
 start() {
     if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
@@ -16,21 +41,50 @@ start() {
         return 1
     fi
 
+    restart_bluealsa=0
+    shim="$STAGE/dl_lib/libg4c4_sco_write_align.so"
+    # BlueALSA 4.1.1 consumes 254 PCM bytes but writes 255 for an odd SCO
+    # MTU. Apply an outgoing-only compatibility shim; leave HCI settings alone.
+    if [ -f "$shim" ] && bluealsa --version | grep -q '4\.1\.1'; then
+        if ! grep -Fq "LD_PRELOAD=$shim " /etc/init.d/S41bluealsa; then
+            cp -p /etc/init.d/S41bluealsa /etc/init.d/S41bluealsa.before-sco-align
+            sed -i "s|LD_PRELOAD=[^ ]* ||; s|start-stop-daemon -S|LD_PRELOAD=$shim start-stop-daemon -S|" /etc/init.d/S41bluealsa
+            restart_bluealsa=1
+        fi
+    fi
+
+    # Earbud microphone requires the hands-free audio gateway profile.
+    if ! grep -q -- '-p hfp-ag' /etc/init.d/S41bluealsa; then
+        cp -p /etc/init.d/S41bluealsa /etc/init.d/S41bluealsa.before-earbud-mic
+        sed -i 's/-p a2dp-source/-p a2dp-source -p hfp-ag/' /etc/init.d/S41bluealsa
+        restart_bluealsa=1
+    fi
+    if [ "$restart_bluealsa" = 1 ]; then
+        /etc/init.d/S41bluealsa restart
+        sleep 2
+    fi
+
     # Ensure bluetooth & bluealsa are ready
     if ! ps | grep -v grep | grep -q bluealsa >/dev/null 2>&1; then
         /etc/init.d/S41bluealsa start
         sleep 1
     fi
 
+    bluetoothctl connect 6C:16:29:7B:00:D4 >/dev/null 2>&1 || true
+    connect_bluetooth_mic
+
     cd "$STAGE"
     export LD_LIBRARY_PATH="$STAGE/dl_lib:/usr/lib:/lib"
     export MAIX_WEBRTC_AUDIO_SOURCE="mic"
-    export MAIX_WEBRTC_BT_DEVICE="bluealsa:DEV=6C:16:29:7B:00:D4,PROFILE=a2dp"
+    export MAIX_WEBRTC_BT_DEVICE="bluealsa:DEV=6C:16:29:7B:00:D4,PROFILE=sco"
 
     echo "Starting WebRTC M2 candidate..."
     nohup "$BIN" > "$LOG" 2>&1 &
     PID=$!
     echo "$PID" > "$PIDFILE"
+    stop_bluetooth_watch
+    nohup "$0" bt-watch "$PID" </dev/null >/dev/null 2>&1 &
+    echo $! > "$BT_PIDFILE"
     sleep 2
 
     if kill -0 "$PID" 2>/dev/null; then
@@ -43,6 +97,7 @@ start() {
 }
 
 stop() {
+    stop_bluetooth_watch
     if [ -f "$PIDFILE" ]; then
         PID=$(cat "$PIDFILE")
         if kill -0 "$PID" 2>/dev/null; then
@@ -77,6 +132,10 @@ status() {
 }
 
 case "$1" in
+    bt-watch)
+        case "${2:-}" in ''|*[!0-9]*) exit 2 ;; esac
+        watch_bluetooth "$2"
+        ;;
     start|stop|status)
         "$1"
         ;;

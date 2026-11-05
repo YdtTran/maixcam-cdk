@@ -48,7 +48,8 @@ def main():
     if 'RISC-V' not in elf or 'ld-musl-riscv64' not in elf:
         raise SystemExit('Unexpected binary architecture or ABI')
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-    stage = '/root/maixcam-standalone-' + time.strftime('%Y%m%d-%H%M%S') + '-' + digest[:8]
+    shim_digest = hashlib.sha256((ROOT / 'build/dl_lib/libg4c4_sco_write_align.so').read_bytes()).hexdigest()
+    stage = '/root/maixcam-standalone-' + time.strftime('%Y%m%d-%H%M%S') + '-' + digest[:8] + '-' + shim_digest[:8]
     local = ROOT / 'build/standalone-stage'
     if local.exists():
         shutil.rmtree(local)
@@ -57,6 +58,7 @@ def main():
     for name in ['hostapd.conf', 'hostapd-fallback.conf', 'dnsmasq.conf', 'server.crt', 'server.key', 'ca.crt']:
         shutil.copy2(args.config / name, local / 'config' / name)
     (local / 'config/signal-token').write_text(secrets.token_hex(32) + '\n')
+    shutil.copy2(ROOT / 'target_services/webrtc_service.sh', local / 'webrtc_service.sh')
     shutil.copy2(binary, local / binary.name)
     shutil.copytree(ROOT / 'build/dl_lib', local / 'dl_lib')
     shutil.copy2(ROOT / 'scripts/standalone/apply.sh', local / 'apply.sh')
