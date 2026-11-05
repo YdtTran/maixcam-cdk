@@ -70,8 +70,12 @@ start() {
         sleep 1
     fi
 
+    # Configure controller voice setting to 16-bit 2's complement CVSD linear PCM (0x0060)
+    hciconfig hci0 voice 0x0060 >/dev/null 2>&1 || true
+
     bluetoothctl connect 6C:16:29:7B:00:D4 >/dev/null 2>&1 || true
     connect_bluetooth_mic
+    amixer -D bluealsa sset "EDIFIER X2 Plus SCO" 100% >/dev/null 2>&1 || true
 
     cd "$STAGE"
     export LD_LIBRARY_PATH="$STAGE/dl_lib:/usr/lib:/lib"

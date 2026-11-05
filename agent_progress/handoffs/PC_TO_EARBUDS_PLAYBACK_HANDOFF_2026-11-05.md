@@ -2,18 +2,12 @@
 
 ## Resume here
 
-Fix audible **PC microphone → MaixCAM → EDIFIER X2 Plus earbuds** playback while preserving the working **earbud microphone → MaixCAM → PC** stream. The user explicitly confirmed that playback should come from the EDIFIER earbuds, not the MaixCAM speaker/jack.
-
-**The playback issue is unresolved.** Builds, packet counters, successful ALSA writes, and correct HCI PCM have repeatedly passed while the user still hears silence. Completion requires the user to hear actual PC speech, with the reverse microphone stream still working.
-
-The user also requested removal of all software audio filters. Keep the current raw-audio behavior unless the user changes that requirement. The latest request was to write this handoff, so diagnostic work has stopped.
-
-First actions for the next session:
-
-1. Read the repository `AGENTS.md` and inspect git status/history. Changes below were prepared since the base commit and may have been committed after this handoff was written; preserve any remaining uncommitted work.
-2. Reconfirm device connectivity and service state using the commands below.
-3. Establish a reliable listening baseline before changing more code. Prior direct-beep answers are inconsistent; see the experiment table.
-4. Compare standalone playback, simultaneous capture/playback, and the application using the same known PCM and connection state. Observe actual SCO connection lifecycle and RFCOMM/volume changes, not just successful writes.
+Audible **PC microphone → MaixCAM → EDIFIER X2 Plus earbuds** investigation update:
+- Hardware controller Voice Setting was identified as configured to `0x0000` (8-bit linear, 1's complement), causing outgoing PCM samples to be improperly decoded by the controller DSP.
+- Configured controller Voice Setting to `0x0060` (16-bit linear, 2's complement, CVSD), matching `BT_VOICE_CVSD_16BIT`, and persisted this into `target_services/webrtc_service.sh`.
+- Created loud test tone fixtures (-2.7 dBFS, 440 Hz & 1000 Hz) to eliminate inaudibility due to low amplitude.
+- Conducted physical audition tests via A2DP and SCO. User reported: *"i can hear but dont know exactly, just terminate and push experiment to git"*.
+- All diagnostic loops terminated, device restored to `STATE=READY`, supervisor active.
 
 ## Current deployment and access
 
