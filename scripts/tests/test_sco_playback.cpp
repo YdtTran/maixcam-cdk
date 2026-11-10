@@ -12,6 +12,9 @@ int snd_pcm_open(snd_pcm_t **pcm, const char *, snd_pcm_stream_t, int) {
     *pcm = reinterpret_cast<snd_pcm_t *>(1);
     return 0;
 }
+int snd_pcm_hw_params_any(snd_pcm_t *, snd_pcm_hw_params_t *) {
+    return -EINVAL;
+}
 int snd_pcm_set_params(snd_pcm_t *, snd_pcm_format_t, snd_pcm_access_t,
                        unsigned channels, unsigned rate, int, unsigned) {
     configured_channels = channels;
@@ -32,13 +35,7 @@ int snd_pcm_close(snd_pcm_t *) { return 0; }
 int main() {
     auto playback = std::make_shared<G4c4BtPlayback>(
         "bluealsa:DEV=6C:16:29:7B:00:D4,PROFILE=sco");
-    for (int i = 0; i < 100 && !configured_rate; ++i)
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    if (configured_rate != 8000 || configured_channels != 1) {
-        std::fprintf(stderr, "FAIL: SCO configured as %u Hz / %u channels, expected 8000 / 1\n",
-                     configured_rate.load(), configured_channels.load());
-        return 1;
-    }
+    assert(configured_rate == 0);
     G4c4OpusRx rx(playback);
     int error = OPUS_OK;
     auto *encoder = opus_encoder_create(48000, 1, OPUS_APPLICATION_AUDIO, &error);
@@ -71,6 +68,7 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     assert(received);
+    assert(configured_rate == 8000 && configured_channels == 1);
     assert(rx.get_stats().resampler.process_calls == 0);
     opus_encoder_destroy(encoder);
     opus_decoder_destroy(reference);

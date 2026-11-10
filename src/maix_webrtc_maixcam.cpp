@@ -393,7 +393,7 @@ namespace maix::webrtc
                 recorder->reset();
                 // Retry Bluetooth capture without stopping video when earbuds
                 // disconnect or have not connected yet at service startup.
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                std::this_thread::sleep_for(std::chrono::milliseconds(1500));
                 opus_encoder_ctl(encoder.get(), OPUS_RESET_STATE);
                 last_capture = std::chrono::steady_clock::now();
                 return true;
@@ -433,13 +433,13 @@ namespace maix::webrtc
 
             if (n == 0) {
                 if (std::chrono::steady_clock::now() - last_capture >
-                    std::chrono::milliseconds(250)) {
+                    std::chrono::milliseconds(2000)) {
                     if (!recover_capture()) break;
                     continue;
                 }
 
                 std::this_thread::sleep_for(
-                    std::chrono::milliseconds(2)
+                    std::chrono::milliseconds(5)
                 );
                 continue;
             }

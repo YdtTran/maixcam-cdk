@@ -5,13 +5,44 @@ LOG="$STAGE/m2_runtime.log"
 PIDFILE="$STAGE/m2.pid"
 BT_PIDFILE="$STAGE/bt_profile_watch.pid"
 
+prepare_bluetooth_controller() {
+    target_mac="6C:16:29:7B:00:D4"
+    hciconfig hci0 up >/dev/null 2>&1 || true
+    hciconfig hci0 voice 0x0060 >/dev/null 2>&1 || true
+    if ! hciconfig -a hci0 2>/dev/null | grep -q "SCO MTU: 120:4"; then
+        if hcitool -i hci0 con 2>/dev/null | grep -q "eSCO"; then
+            bluetoothctl disconnect "$target_mac" >/dev/null 2>&1 || true
+            sleep 2
+        fi
+        hciconfig hci0 scomtu 120:4 >/dev/null 2>&1 || true
+    fi
+}
+
 connect_bluetooth_mic() {
-    # Generic Connect may restore only A2DP. Request the remote Handsfree
-    # service explicitly so BlueALSA creates the microphone PCM as well.
-    dbus-send --system --print-reply --reply-timeout=3000 --dest=org.bluez \
-        /org/bluez/hci0/dev_6C_16_29_7B_00_D4 \
-        org.bluez.Device1.ConnectProfile \
-        string:0000111e-0000-1000-8000-00805f9b34fb >/dev/null 2>&1 || true
+    target_mac="6C:16:29:7B:00:D4"
+    # Fast check: if BlueALSA already exposes the SCO PCM, do not mutate the link or controller.
+    if bluealsa-aplay -L 2>/dev/null | grep -q "DEV=${target_mac},PROFILE=sco"; then
+        return 0
+    fi
+
+    prepare_bluetooth_controller
+
+    if ! bluetoothctl info "$target_mac" 2>/dev/null | grep -q "Connected: yes"; then
+        bluetoothctl connect "$target_mac" >/dev/null 2>&1 || true
+        sleep 2
+    fi
+
+    if ! bluealsa-aplay -L 2>/dev/null | grep -q "DEV=${target_mac},PROFILE=sco"; then
+        dbus-send --system --print-reply --reply-timeout=3000 --dest=org.bluez \
+            /org/bluez/hci0/dev_6C_16_29_7B_00_D4 \
+            org.bluez.Device1.ConnectProfile \
+            string:0000111e-0000-1000-8000-00805f9b34fb >/dev/null 2>&1 || true
+        sleep 1
+    fi
+
+    if bluealsa-aplay -L 2>/dev/null | grep -q "DEV=${target_mac},PROFILE=sco"; then
+        amixer -D bluealsa sset "EDIFIER X2 Plus SCO" 100% unmute >/dev/null 2>&1 || true
+    fi
 }
 
 stop_bluetooth_watch() {
@@ -64,18 +95,19 @@ start() {
         sleep 2
     fi
 
+    # Ensure S42bt_manager does not run duplicate connection loops alongside bt-watch
+    if [ -x /etc/init.d/S42bt_manager ]; then
+        /etc/init.d/S42bt_manager stop >/dev/null 2>&1 || true
+    fi
+
     # Ensure bluetooth & bluealsa are ready
     if ! ps | grep -v grep | grep -q bluealsa >/dev/null 2>&1; then
         /etc/init.d/S41bluealsa start
         sleep 1
     fi
 
-    # Configure controller voice setting to 16-bit 2's complement CVSD linear PCM (0x0060)
-    hciconfig hci0 voice 0x0060 >/dev/null 2>&1 || true
-
-    bluetoothctl connect 6C:16:29:7B:00:D4 >/dev/null 2>&1 || true
+    prepare_bluetooth_controller
     connect_bluetooth_mic
-    amixer -D bluealsa sset "EDIFIER X2 Plus SCO" 100% >/dev/null 2>&1 || true
 
     cd "$STAGE"
     export LD_LIBRARY_PATH="$STAGE/dl_lib:/usr/lib:/lib"

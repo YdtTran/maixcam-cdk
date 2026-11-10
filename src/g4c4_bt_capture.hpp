@@ -31,8 +31,23 @@ public:
             pcm_ = nullptr;
             fail("open", result);
         }
-        result = snd_pcm_set_params(pcm_, SND_PCM_FORMAT_S16_LE,
-            SND_PCM_ACCESS_RW_INTERLEAVED, 1, 48000, 1, 100000);
+        snd_pcm_hw_params_t *hw = nullptr;
+        snd_pcm_hw_params_alloca(&hw);
+        unsigned int rate = 48000;
+        unsigned int period_us = 20000;
+        unsigned int buffer_us = 80000;
+        if ((result = snd_pcm_hw_params_any(pcm_, hw)) < 0 ||
+            (result = snd_pcm_hw_params_set_rate_resample(pcm_, hw, 1)) < 0 ||
+            (result = snd_pcm_hw_params_set_access(pcm_, hw, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0 ||
+            (result = snd_pcm_hw_params_set_format(pcm_, hw, SND_PCM_FORMAT_S16_LE)) < 0 ||
+            (result = snd_pcm_hw_params_set_channels(pcm_, hw, 1)) < 0 ||
+            (result = snd_pcm_hw_params_set_rate_near(pcm_, hw, &rate, nullptr)) < 0 ||
+            (result = snd_pcm_hw_params_set_period_time_near(pcm_, hw, &period_us, nullptr)) < 0 ||
+            (result = snd_pcm_hw_params_set_buffer_time_near(pcm_, hw, &buffer_us, nullptr)) < 0 ||
+            (result = snd_pcm_hw_params(pcm_, hw)) < 0) {
+            result = snd_pcm_set_params(pcm_, SND_PCM_FORMAT_S16_LE,
+                SND_PCM_ACCESS_RW_INTERLEAVED, 1, 48000, 1, 80000);
+        }
         if (result < 0) {
             close();
             fail("configure", result);

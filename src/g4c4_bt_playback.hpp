@@ -154,13 +154,16 @@ public:
      */
     void notify_stream_idle() {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!queue_.empty()) {
+        if (last_enqueue_.time_since_epoch().count() > 0) {
             auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_enqueue_).count() > 300) {
-                talk_off_dropped_chunks_.fetch_add(queue_.size(), std::memory_order_relaxed);
-                queue_.clear();
-                current_queue_depth_.store(0, std::memory_order_relaxed);
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_enqueue_).count() > 500) {
+                if (!queue_.empty()) {
+                    talk_off_dropped_chunks_.fetch_add(queue_.size(), std::memory_order_relaxed);
+                    queue_.clear();
+                    current_queue_depth_.store(0, std::memory_order_relaxed);
+                }
                 need_pcm_drop_ = true;
+                last_enqueue_ = std::chrono::steady_clock::time_point{};
                 cv_.notify_one();
             }
         }
@@ -225,13 +228,36 @@ private:
 
         // BlueALSA needs time to negotiate D-Bus state
         for (int retry = 0; retry < 6; ++retry) {
-            err = snd_pcm_set_params(pcm_handle_,
-                                     SND_PCM_FORMAT_S16_LE,
-                                     SND_PCM_ACCESS_RW_INTERLEAVED,
-                                     channels_,
-                                     sample_rate_,
-                                     1,      // soft_resample allowed
-                                     120000); // 120ms latency buffer (resilient to BT/Wi-Fi burst jitter)
+            if (native_sco_) {
+                snd_pcm_hw_params_t* hw = nullptr;
+                snd_pcm_hw_params_alloca(&hw);
+                unsigned int rate = sample_rate_;
+                unsigned int period_us = 20000;
+                unsigned int buffer_us = 80000;
+                if ((err = snd_pcm_hw_params_any(pcm_handle_, hw)) >= 0 &&
+                    (err = snd_pcm_hw_params_set_rate_resample(pcm_handle_, hw, 1)) >= 0 &&
+                    (err = snd_pcm_hw_params_set_access(pcm_handle_, hw, SND_PCM_ACCESS_RW_INTERLEAVED)) >= 0 &&
+                    (err = snd_pcm_hw_params_set_format(pcm_handle_, hw, SND_PCM_FORMAT_S16_LE)) >= 0 &&
+                    (err = snd_pcm_hw_params_set_channels(pcm_handle_, hw, channels_)) >= 0 &&
+                    (err = snd_pcm_hw_params_set_rate_near(pcm_handle_, hw, &rate, nullptr)) >= 0 &&
+                    (err = snd_pcm_hw_params_set_period_time_near(pcm_handle_, hw, &period_us, nullptr)) >= 0 &&
+                    (err = snd_pcm_hw_params_set_buffer_time_near(pcm_handle_, hw, &buffer_us, nullptr)) >= 0) {
+                    err = snd_pcm_hw_params(pcm_handle_, hw);
+                }
+                if (err < 0 && err != -EBUSY && err != -EAGAIN) {
+                    err = snd_pcm_set_params(pcm_handle_, SND_PCM_FORMAT_S16_LE,
+                                             SND_PCM_ACCESS_RW_INTERLEAVED, channels_,
+                                             sample_rate_, 1, 80000);
+                }
+            } else {
+                err = snd_pcm_set_params(pcm_handle_,
+                                         SND_PCM_FORMAT_S16_LE,
+                                         SND_PCM_ACCESS_RW_INTERLEAVED,
+                                         channels_,
+                                         sample_rate_,
+                                         1,      // soft_resample allowed
+                                         120000); // 120ms latency buffer
+            }
             if (err == -EBUSY || err == -EAGAIN) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
@@ -269,16 +295,14 @@ private:
     }
 
     void worker_loop() {
-        // Pre-warm BlueALSA device on worker launch so initial stream has zero setup latency
-        open_device();
-
         while (!stopping_) {
             Chunk chunk;
             bool do_drop = false;
+            bool from_queue = false;
 
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait_for(lock, std::chrono::milliseconds(100), [this] {
+                cv_.wait_for(lock, std::chrono::milliseconds(20), [this] {
                     return stopping_ || !queue_.empty() || need_pcm_drop_;
                 });
 
@@ -291,7 +315,8 @@ private:
                 }
 
                 if (do_drop) {
-                    // PCM drop will be performed below outside mutex
+                    // Close idle/stopped SCO playback handle outside mutex so BlueALSA
+                    // releases its playback reference when Talk is OFF or stream is idle.
                 } else if (is_prebuffering_ && queue_.size() < 2 && talk_active_) {
                     continue;
                 } else {
@@ -299,24 +324,27 @@ private:
                 }
 
                 if (!do_drop && (queue_.empty() || !talk_active_)) {
-                    // While idle, ensure device is pre-warmed if not already open
-                    if (!pcm_handle_ && talk_active_) {
-                        lock.unlock();
-                        open_device();
+                    if (native_sco_ && pcm_handle_ && talk_active_ && !is_prebuffering_ &&
+                        last_enqueue_.time_since_epoch().count() > 0 &&
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - last_enqueue_).count() <= 500) {
+                        // Active SCO Talk session packet gap: feed 20ms silence (160 samples)
+                        // to keep the 80ms buffer clocked without underrunning.
+                        chunk.samples.assign(sample_rate_ / 50 * channels_, 0);
+                        chunk.num_frames = sample_rate_ / 50;
+                    } else {
+                        continue;
                     }
-                    continue;
-                }
-
-                if (!queue_.empty() && talk_active_) {
+                } else if (!queue_.empty() && talk_active_) {
                     // Non-destructive peek: do NOT discard chunk if device open is delayed
                     chunk = queue_.front();
+                    from_queue = true;
                 }
             }
 
             if (do_drop && pcm_handle_) {
                 talk_off_pcm_drops_.fetch_add(1, std::memory_order_relaxed);
-                snd_pcm_drop(pcm_handle_);
-                snd_pcm_prepare(pcm_handle_);
+                close_device();
             }
 
             if (chunk.num_frames == 0) {
@@ -328,8 +356,8 @@ private:
                 continue;
             }
 
-            // Successfully opened/verified device: now safely pop chunk from queue
-            {
+            // Successfully opened/verified device: now safely pop real chunk from queue
+            if (from_queue) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (!queue_.empty()) {
                     queue_.pop_front();
