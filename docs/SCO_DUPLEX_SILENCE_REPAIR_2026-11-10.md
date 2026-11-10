@@ -59,11 +59,12 @@
    - Makes `connect_bluetooth_mic()` idempotent: returns immediately when `bluealsa-aplay -L` already lists `DEV=6C:16:29:7B:00:D4,PROFILE=sco`, avoiding periodic HCI/D-Bus commands during active streaming.
 2. `src/maix_webrtc_maixcam.cpp`:
    - Increases capture stall timeout in `_opus_mic_thread` from `250 ms` to `2000 ms` and recovery sleep from `500 ms` to `1500 ms` (with 5 ms empty-read poll sleep), eliminating the 750 ms PCM reset storm.
-3. `src/g4c4_bt_capture.hpp`:
+3. `src/g4c4_bt_capture.hpp` & `src/maix_webrtc_audio_dsp.hpp`:
    - Configures explicit ALSA `hw_params` in `G4c4BtCapture::open` for `period_time = 20000` us (20 ms) and `buffer_time = 80000` us (80 ms), with fallback to `snd_pcm_set_params(..., 80000)`.
+   - Adds a periodic 5-second (`PERIODIC_FLUSH_MS = 5000`) glitch-free capture flush that drains stale queued non-blocking periods in `G4c4BtCapture::read()` and trims `MaixAudioUplinkDSP::accumulator_` to the newest full frame plus partial remainder (`< FRAME_SAMPLES * 2`).
 4. `src/g4c4_bt_playback.hpp`:
    - Configures explicit ALSA `hw_params` in `G4c4BtPlayback::open_device` for `native_sco_` (`period_time = 20000` us / 160 samples, `buffer_time = 80000` us / 640 samples at 8000 Hz mono).
-   - Opens the playback PCM on demand when Talk audio arrives, injects 20 ms silence frames (`160` samples) during active SCO Talk packet gaps `<= 500 ms`, and calls `close_device()` on Talk OFF or `> 500 ms` stream idle (`notify_stream_idle()`).
+   - Opens the playback PCM on demand when Talk audio arrives, injects 20 ms silence frames (`160` samples) during active SCO Talk packet gaps `<= 500 ms`, trims queued playback frames to the newest `FLUSH_KEEP_FRAMES = 2` (40 ms) every `PERIODIC_FLUSH_MS = 5000` ms without dropping the ALSA stream, and calls `close_device()` on Talk OFF or `> 500 ms` stream idle (`notify_stream_idle()`).
 5. `scripts/standalone/test_bluetooth_recovery.sh` & `scripts/tests/test_sco_duplex_repair.py`:
    - Added unit/regression tests for startup ordering, `255:4` eSCO link reset, idempotent `connect_bluetooth_mic`, and capture/playback contracts, and updated the standalone Bluetooth recovery script to assert both `PROFILE=sco` restoration and `SCO MTU: 120:4`.
 

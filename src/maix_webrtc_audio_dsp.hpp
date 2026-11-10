@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -19,12 +20,17 @@ public:
     static constexpr int FRAME_SAMPLES = 960;
     static constexpr size_t FRAME_BYTES = FRAME_SAMPLES * sizeof(int16_t);
     static constexpr size_t MAX_ACCUMULATOR_SAMPLES = FRAME_SAMPLES * 5;
+    static constexpr int64_t PERIODIC_FLUSH_MS = 5000;
 
-    MaixAudioUplinkDSP() { accumulator_.reserve(MAX_ACCUMULATOR_SAMPLES); }
+    MaixAudioUplinkDSP()
+        : last_flush_(std::chrono::steady_clock::now()) {
+        accumulator_.reserve(MAX_ACCUMULATOR_SAMPLES);
+    }
 
     void reset() {
         std::lock_guard<std::mutex> lock(mutex_);
         accumulator_.clear();
+        last_flush_ = std::chrono::steady_clock::now();
     }
 
     void ingest_bytes(const void *data, size_t bytes) {
@@ -43,6 +49,16 @@ public:
             overflow_count_.fetch_add(1, std::memory_order_relaxed);
         }
         accumulator_.insert(accumulator_.end(), src, src + samples_in);
+
+        const auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_flush_).count() >= PERIODIC_FLUSH_MS) {
+            last_flush_ = now;
+            if (accumulator_.size() >= FRAME_SAMPLES * 2) {
+                const size_t drop = ((accumulator_.size() / FRAME_SAMPLES) - 1) * FRAME_SAMPLES;
+                accumulator_.erase(accumulator_.begin(), accumulator_.begin() + drop);
+                overflow_count_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
     }
 
     bool has_frame() {
@@ -82,6 +98,7 @@ public:
 private:
     std::mutex mutex_;
     std::vector<int16_t> accumulator_;
+    std::chrono::steady_clock::time_point last_flush_;
     std::atomic<uint64_t> frames_bypassed_{0};
     std::atomic<uint64_t> overflow_count_{0};
 };

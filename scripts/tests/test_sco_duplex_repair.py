@@ -24,6 +24,7 @@ WEBRTC_SERVICE_SH = REPO_ROOT / "target_services" / "webrtc_service.sh"
 MAIX_WEBRTC_CPP = REPO_ROOT / "src" / "maix_webrtc_maixcam.cpp"
 BT_CAPTURE_HPP = REPO_ROOT / "src" / "g4c4_bt_capture.hpp"
 BT_PLAYBACK_HPP = REPO_ROOT / "src" / "g4c4_bt_playback.hpp"
+AUDIO_DSP_HPP = REPO_ROOT / "src" / "maix_webrtc_audio_dsp.hpp"
 
 
 def _write_executable(path: Path, content: str) -> None:
@@ -197,18 +198,24 @@ exit 0
         cpp_text = MAIX_WEBRTC_CPP.read_text(encoding="utf-8")
         cap_text = BT_CAPTURE_HPP.read_text(encoding="utf-8")
         pb_text = BT_PLAYBACK_HPP.read_text(encoding="utf-8")
+        dsp_text = AUDIO_DSP_HPP.read_text(encoding="utf-8")
 
         self.assertIn("milliseconds(2000)", cpp_text)
         self.assertIn("milliseconds(1500)", cpp_text)
 
         self.assertIn("unsigned int period_us = 20000;", cap_text)
         self.assertIn("unsigned int buffer_us = 80000;", cap_text)
+        self.assertIn("PERIODIC_FLUSH_MS = 5000;", cap_text)
 
         self.assertIn("unsigned int period_us = 20000;", pb_text)
         self.assertIn("unsigned int buffer_us = 80000;", pb_text)
+        self.assertIn("FLUSH_KEEP_FRAMES = 2;", pb_text)
+        self.assertIn("PERIODIC_FLUSH_MS = 5000;", pb_text)
         self.assertIn("chunk.samples.assign(sample_rate_ / 50 * channels_, 0);", pb_text)
         self.assertIn("notify_stream_idle()", pb_text)
         self.assertIn("close_device();", pb_text)
+
+        self.assertIn("PERIODIC_FLUSH_MS = 5000;", dsp_text)
 
 
 if __name__ == "__main__":

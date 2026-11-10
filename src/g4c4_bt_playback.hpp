@@ -31,6 +31,8 @@
 class G4c4BtPlayback final {
 public:
     static constexpr size_t MAX_QUEUE_FRAMES = 25; // 25 * 20ms = 500ms max jitter buffer
+    static constexpr size_t FLUSH_KEEP_FRAMES = 2; // Keep newest 1-2 frames (40ms) on periodic flush
+    static constexpr int64_t PERIODIC_FLUSH_MS = 5000;
     static constexpr unsigned int SAMPLE_RATE = 48000;
     static constexpr unsigned int CHANNELS = 2;
 
@@ -103,6 +105,7 @@ public:
             current_queue_depth_.store(0, std::memory_order_relaxed);
             need_pcm_drop_ = true;
             is_prebuffering_ = true;
+            last_periodic_flush_ = std::chrono::steady_clock::time_point{};
         }
         cv_.notify_one();
     }
@@ -128,6 +131,18 @@ public:
             return;
         }
 
+        const auto now = std::chrono::steady_clock::now();
+        if (last_periodic_flush_.time_since_epoch().count() == 0) {
+            last_periodic_flush_ = now;
+        } else if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_periodic_flush_).count() >= PERIODIC_FLUSH_MS) {
+            last_periodic_flush_ = now;
+            if (queue_.size() >= FLUSH_KEEP_FRAMES) {
+                const size_t drop = queue_.size() - (FLUSH_KEEP_FRAMES - 1);
+                for (size_t i = 0; i < drop; ++i) queue_.pop_front();
+                dropped_overflow_.fetch_add(drop, std::memory_order_relaxed);
+            }
+        }
+
         // Deterministic overflow policy: drop oldest frame to prevent latency buildup
         if (queue_.size() >= MAX_QUEUE_FRAMES) {
             queue_.pop_front();
@@ -145,7 +160,7 @@ public:
         size_t cur_peak = peak_queue_depth_.load(std::memory_order_relaxed);
         while (qsize > cur_peak && !peak_queue_depth_.compare_exchange_weak(cur_peak, qsize, std::memory_order_relaxed)) {}
 
-        last_enqueue_ = std::chrono::steady_clock::now();
+        last_enqueue_ = now;
         cv_.notify_one();
     }
 
@@ -164,6 +179,7 @@ public:
                 }
                 need_pcm_drop_ = true;
                 last_enqueue_ = std::chrono::steady_clock::time_point{};
+                last_periodic_flush_ = std::chrono::steady_clock::time_point{};
                 cv_.notify_one();
             }
         }
@@ -438,6 +454,7 @@ private:
     std::chrono::steady_clock::time_point last_open_error_{};
     std::chrono::steady_clock::time_point last_log_error_{};
     std::chrono::steady_clock::time_point last_enqueue_{};
+    std::chrono::steady_clock::time_point last_periodic_flush_{};
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;

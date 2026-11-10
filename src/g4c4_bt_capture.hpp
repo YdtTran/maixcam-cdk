@@ -1,6 +1,7 @@
 #pragma once
 
 #include <alsa/asoundlib.h>
+#include <chrono>
 #include <cstdlib>
 #include <cstdio>
 #include <cstdint>
@@ -13,6 +14,8 @@
 // keeping the existing uplink DSP and RTP clock unchanged.
 class G4c4BtCapture final {
 public:
+    static constexpr int64_t PERIODIC_FLUSH_MS = 5000;
+
     G4c4BtCapture() = default;
     ~G4c4BtCapture() { close(); }
     G4c4BtCapture(const G4c4BtCapture&) = delete;
@@ -53,18 +56,29 @@ public:
             fail("configure", result);
         }
         std::fprintf(stderr, "[Bluetooth microphone] Opened %s (48000 Hz mono S16_LE)\n", device);
+        last_flush_ = std::chrono::steady_clock::now();
     }
 
     const std::vector<int16_t>& read() {
         open();
         int16_t input[960];
-        const snd_pcm_sframes_t count = snd_pcm_readi(pcm_, input, 960);
+        snd_pcm_sframes_t count = snd_pcm_readi(pcm_, input, 960);
         mono_.clear();
         if (count == -EAGAIN || count == 0) return mono_;
         if (count < 0) {
             const int result = snd_pcm_recover(pcm_, static_cast<int>(count), 1);
             if (result < 0) fail("read", result);
             return mono_;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_flush_).count() >= PERIODIC_FLUSH_MS) {
+            last_flush_ = now;
+            // Drain any stale queued periods in the non-blocking ALSA buffer, keeping the newest chunk.
+            for (int i = 0; i < 4; ++i) {
+                const snd_pcm_sframes_t newer = snd_pcm_readi(pcm_, input, 960);
+                if (newer <= 0) break;
+                count = newer;
+            }
         }
         mono_.assign(input, input + count);
         return mono_;
@@ -80,5 +94,6 @@ private:
         pcm_ = nullptr;
     }
     snd_pcm_t *pcm_ = nullptr;
+    std::chrono::steady_clock::time_point last_flush_{};
     std::vector<int16_t> mono_;
 };
