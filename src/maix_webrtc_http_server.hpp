@@ -14,6 +14,10 @@
 #include <atomic>
 #include <functional>
 #include <cstdlib>
+#include <cstdio>
+#include <fstream>
+#include <vector>
+#include <sys/stat.h>
 #include <stdexcept>
 #include "maix_webrtc_audio_dsp.hpp"
 #include "g4c4_perf.hpp"
@@ -939,7 +943,24 @@ private:
                     </div>
                 </div>
 
-                <div id="tab-hw-content" style="display:none; flex-direction:column; flex:1; min-height:0;">
+                <div id="tab-hw-content" style="display:none; flex-direction:column; flex:1; min-height:0; overflow-y:auto;">
+                    <div style="padding:12px; border-bottom:1px solid rgba(255,255,255,0.08); display:flex; flex-direction:column; gap:8px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span style="font-weight:600; font-size:13px;">Wi-Fi Setup (AP fallback only)</span>
+                            <span id="wifi-mode-badge" style="font-size:11px; opacity:0.85;">Checking...</span>
+                        </div>
+                        <div style="display:flex; gap:6px;">
+                            <input id="wifi-ssid" type="text" list="wifi-ssid-list" placeholder="Wi-Fi SSID" style="flex:1; min-width:0; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.25); color:inherit; font-size:12px;">
+                            <datalist id="wifi-ssid-list"></datalist>
+                            <button type="button" class="btn-action-sm" onclick="scanWifi()">Scan</button>
+                        </div>
+                        <div style="display:flex; gap:6px;">
+                            <input id="wifi-pass" type="password" placeholder="Password (empty if open)" style="flex:1; min-width:0; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.25); color:inherit; font-size:12px;">
+                            <button type="button" class="btn-action-sm" onclick="connectWifi()">Connect</button>
+                            <button type="button" class="btn-action-sm" onclick="switchWifiAp()" title="Switch back to Setup AP">Setup AP</button>
+                        </div>
+                        <div id="wifi-msg" style="font-size:11px; opacity:0.8;"></div>
+                    </div>
                     <div class="spec-list">
                         <div class="spec-row">
                             <span class="spec-name">SoC Platform</span>
@@ -1512,6 +1533,77 @@ private:
             a.download = `snapshot_${stamp}.png`;
             a.click();
         }
+
+        async function refreshWifiStatus() {
+            const badge = document.getElementById('wifi-mode-badge');
+            if (!badge) return;
+            try {
+                const res = await fetch('/api/wifi/status');
+                const st = await res.json();
+                if (st.mode === 'sta') {
+                    badge.textContent = `STA: ${st.ssid} (${st.ip || 'no IP'}, ${st.rssi} dBm)`;
+                } else if (st.mode === 'ap') {
+                    badge.textContent = `Setup AP: ${st.ssid} (${st.ip || '192.168.4.1'})`;
+                } else {
+                    badge.textContent = 'Wi-Fi: Disconnected';
+                }
+            } catch {
+                badge.textContent = 'Wi-Fi: Status unavailable';
+            }
+        }
+
+        async function scanWifi() {
+            const msg = document.getElementById('wifi-msg');
+            const dl = document.getElementById('wifi-ssid-list');
+            msg.textContent = 'Scanning nearby Wi-Fi networks...';
+            try {
+                const res = await fetch('/api/wifi/scan');
+                const data = await res.json();
+                dl.innerHTML = '';
+                (data.ssids || []).forEach((s) => {
+                    const opt = document.createElement('option');
+                    opt.value = s;
+                    dl.appendChild(opt);
+                });
+                msg.textContent = `Found ${(data.ssids || []).length} network(s). Pick or type SSID.`;
+            } catch {
+                msg.textContent = 'Scan failed.';
+            }
+        }
+
+        async function connectWifi() {
+            const ssid = document.getElementById('wifi-ssid').value.trim();
+            const password = document.getElementById('wifi-pass').value;
+            const msg = document.getElementById('wifi-msg');
+            if (!ssid) { msg.textContent = 'Enter an SSID first.'; return; }
+            msg.textContent = `Saving "${ssid}" and connecting...`;
+            try {
+                const res = await fetch('/api/wifi/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ssid, password })
+                });
+                const data = await res.json();
+                msg.textContent = data.ok
+                    ? `${data.message}. If using Setup AP, reconnect to "${ssid}" (or device falls back to Setup AP if connection fails).`
+                    : (data.error || 'Failed to save Wi-Fi config.');
+            } catch {
+                msg.textContent = 'Request failed.';
+            }
+        }
+
+        async function switchWifiAp() {
+            const msg = document.getElementById('wifi-msg');
+            msg.textContent = 'Switching to Setup AP (MaixCAM)...';
+            try {
+                await fetch('/api/wifi/ap', { method: 'POST' });
+                msg.textContent = 'Switched to Setup AP: MaixCAM (192.168.4.1).';
+            } catch {
+                msg.textContent = 'Request failed.';
+            }
+        }
+
+        refreshWifiStatus();
     </script>
 </body>
 </html>
@@ -2063,6 +2155,167 @@ public:
             }
             if (_talk_callback) _talk_callback(act);
             res.set_content(act ? "{\"talk\":true}" : "{\"talk\":false}", "application/json; charset=utf-8");
+        });
+
+        auto json_esc = [](const std::string& s) {
+            std::string out;
+            out.reserve(s.size() + 8);
+            for (unsigned char c : s) {
+                if (c == '"' || c == '\\') { out.push_back('\\'); out.push_back(static_cast<char>(c)); }
+                else if (c >= 0x20 && c != 0x7f) { out.push_back(static_cast<char>(c)); }
+            }
+            return out;
+        };
+
+        auto run_cmd = [](const char* cmd) {
+            std::string out;
+            FILE* fp = popen(cmd, "r");
+            if (!fp) return out;
+            char buf[512];
+            while (fgets(buf, sizeof(buf), fp)) out += buf;
+            pclose(fp);
+            return out;
+        };
+
+        _server->Get("/api/wifi/status", [json_esc, run_cmd](const httplib::Request&, httplib::Response& res) {
+            std::string ip_out = run_cmd("ip -4 -o addr show dev wlan0 2>/dev/null");
+            std::string ip;
+            auto pos = ip_out.find("inet ");
+            if (pos != std::string::npos) {
+                pos += 5;
+                auto end = ip_out.find('/', pos);
+                if (end != std::string::npos) ip = ip_out.substr(pos, end - pos);
+            }
+            std::string link_out = run_cmd("iw dev wlan0 link 2>/dev/null");
+            std::string mode = "down", ssid;
+            int rssi = 0;
+            if (ip == "192.168.4.1" || !run_cmd("pidof hostapd 2>/dev/null").empty()) {
+                mode = "ap";
+                ssid = "MaixCAM";
+            } else if (link_out.find("Connected to") != std::string::npos) {
+                mode = "sta";
+                auto s = link_out.find("SSID: ");
+                if (s != std::string::npos) {
+                    s += 6;
+                    auto e = link_out.find('\n', s);
+                    ssid = link_out.substr(s, e == std::string::npos ? std::string::npos : e - s);
+                    while (!ssid.empty() && (ssid.back() == '\r' || ssid.back() == ' ')) ssid.pop_back();
+                }
+                auto r = link_out.find("signal: ");
+                if (r != std::string::npos) rssi = std::atoi(link_out.c_str() + r + 8);
+            }
+            std::string body = "{\"mode\":\"" + mode + "\",\"ssid\":\"" + json_esc(ssid) +
+                               "\",\"ip\":\"" + json_esc(ip) + "\",\"rssi\":" + std::to_string(rssi) + "}";
+            res.set_content(body, "application/json; charset=utf-8");
+        });
+
+        _server->Get("/api/wifi/scan", [json_esc, run_cmd](const httplib::Request&, httplib::Response& res) {
+            std::string out = run_cmd("iw dev wlan0 scan ap-force 2>/dev/null || iw dev wlan0 scan 2>/dev/null");
+            std::vector<std::string> ssids;
+            size_t p = 0;
+            while ((p = out.find("SSID: ", p)) != std::string::npos) {
+                p += 6;
+                size_t e = out.find('\n', p);
+                std::string s = out.substr(p, e == std::string::npos ? std::string::npos : e - p);
+                while (!s.empty() && (s.back() == '\r' || s.back() == ' ')) s.pop_back();
+                if (!s.empty() && s.find("\\x00") == std::string::npos) {
+                    bool dup = false;
+                    for (const auto& x : ssids) if (x == s) { dup = true; break; }
+                    if (!dup) {
+                        ssids.push_back(s);
+                        if (ssids.size() >= 20) break;
+                    }
+                }
+            }
+            std::string body = "{\"ssids\":[";
+            for (size_t i = 0; i < ssids.size(); ++i) {
+                if (i) body += ',';
+                body += "\"" + json_esc(ssids[i]) + "\"";
+            }
+            body += "]}";
+            res.set_content(body, "application/json; charset=utf-8");
+        });
+
+        _server->Post("/api/wifi/connect", [json_esc](const httplib::Request& req, httplib::Response& res) {
+            auto extract_field = [&](const char* key) -> std::string {
+                if (req.has_param(key)) return req.get_param_value(key);
+                std::string pat = std::string("\"") + key + "\"";
+                auto k = req.body.find(pat);
+                if (k == std::string::npos) return {};
+                auto c = req.body.find(':', k + pat.size());
+                if (c == std::string::npos) return {};
+                auto q1 = req.body.find('"', c + 1);
+                if (q1 == std::string::npos) return {};
+                std::string val;
+                for (size_t i = q1 + 1; i < req.body.size(); ++i) {
+                    char ch = req.body[i];
+                    if (ch == '\\' && i + 1 < req.body.size()) { val.push_back(req.body[++i]); }
+                    else if (ch == '"') { return val; }
+                    else { val.push_back(ch); }
+                }
+                return {};
+            };
+            auto has_ctrl = [](const std::string& s) {
+                for (unsigned char c : s) if (c < 0x20 || c == 0x7f) return true;
+                return false;
+            };
+            std::string ssid = extract_field("ssid");
+            std::string pass = extract_field("password");
+            if (ssid.empty() || ssid.size() > 32 || has_ctrl(ssid) || has_ctrl(pass)) {
+                res.status = 400;
+                res.set_content("{\"ok\":false,\"error\":\"Invalid SSID or characters\"}", "application/json; charset=utf-8");
+                return;
+            }
+            if (!pass.empty() && (pass.size() < 8 || pass.size() > 63)) {
+                res.status = 400;
+                res.set_content("{\"ok\":false,\"error\":\"Password must be 8-63 characters (or empty for open)\"}", "application/json; charset=utf-8");
+                return;
+            }
+            auto wpa_esc = [](const std::string& s) {
+                std::string o;
+                for (char c : s) {
+                    if (c == '\\' || c == '"') o.push_back('\\');
+                    o.push_back(c);
+                }
+                return o;
+            };
+            const char* tmp_path = "/etc/wpa_supplicant.conf.tmp";
+            const char* dst_path = "/etc/wpa_supplicant.conf";
+            {
+                std::ofstream f(tmp_path, std::ios::trunc);
+                if (!f) {
+                    res.status = 500;
+                    res.set_content("{\"ok\":false,\"error\":\"Failed to write wpa_supplicant.conf\"}", "application/json; charset=utf-8");
+                    return;
+                }
+                f << "ctrl_interface=/var/run/wpa_supplicant\nupdate_config=1\n\nnetwork={\n"
+                  << "\tssid=\"" << wpa_esc(ssid) << "\"\n";
+                if (pass.empty()) {
+                    f << "\tkey_mgmt=NONE\n";
+                } else {
+                    f << "\tpsk=\"" << wpa_esc(pass) << "\"\n";
+                }
+                f << "}\n";
+            }
+            chmod(tmp_path, 0600);
+            if (std::rename(tmp_path, dst_path) != 0) {
+                res.status = 500;
+                res.set_content("{\"ok\":false,\"error\":\"Failed to commit wpa_supplicant.conf\"}", "application/json; charset=utf-8");
+                return;
+            }
+            res.set_content("{\"ok\":true,\"message\":\"Connecting to " + json_esc(ssid) + "\"}", "application/json; charset=utf-8");
+            std::thread([]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                (void)std::system("/root/maixcam_standalone_network.sh restart >/dev/null 2>&1");
+            }).detach();
+        });
+
+        _server->Post("/api/wifi/ap", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content("{\"ok\":true,\"message\":\"Switching to Setup AP\"}", "application/json; charset=utf-8");
+            std::thread([]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                (void)std::system("/root/maixcam_standalone_network.sh ap >/dev/null 2>&1");
+            }).detach();
         });
 
         _server->Get("/metrics", [this](const httplib::Request& req, httplib::Response& res) {

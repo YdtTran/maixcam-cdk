@@ -900,7 +900,24 @@
                     </div>
                 </div>
 
-                <div id="tab-hw-content" style="display:none; flex-direction:column; flex:1; min-height:0;">
+                <div id="tab-hw-content" style="display:none; flex-direction:column; flex:1; min-height:0; overflow-y:auto;">
+                    <div style="padding:12px; border-bottom:1px solid rgba(255,255,255,0.08); display:flex; flex-direction:column; gap:8px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span style="font-weight:600; font-size:13px;">Wi-Fi Setup (AP fallback only)</span>
+                            <span id="wifi-mode-badge" style="font-size:11px; opacity:0.85;">Checking...</span>
+                        </div>
+                        <div style="display:flex; gap:6px;">
+                            <input id="wifi-ssid" type="text" list="wifi-ssid-list" placeholder="Wi-Fi SSID" style="flex:1; min-width:0; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.25); color:inherit; font-size:12px;">
+                            <datalist id="wifi-ssid-list"></datalist>
+                            <button type="button" class="btn-action-sm" onclick="scanWifi()">Scan</button>
+                        </div>
+                        <div style="display:flex; gap:6px;">
+                            <input id="wifi-pass" type="password" placeholder="Password (empty if open)" style="flex:1; min-width:0; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.25); color:inherit; font-size:12px;">
+                            <button type="button" class="btn-action-sm" onclick="connectWifi()">Connect</button>
+                            <button type="button" class="btn-action-sm" onclick="switchWifiAp()" title="Switch back to Setup AP">Setup AP</button>
+                        </div>
+                        <div id="wifi-msg" style="font-size:11px; opacity:0.8;"></div>
+                    </div>
                     <div class="spec-list">
                         <div class="spec-row">
                             <span class="spec-name">SoC Platform</span>
@@ -1473,6 +1490,77 @@
             a.download = `snapshot_${stamp}.png`;
             a.click();
         }
+
+        async function refreshWifiStatus() {
+            const badge = document.getElementById('wifi-mode-badge');
+            if (!badge) return;
+            try {
+                const res = await fetch('/api/wifi/status');
+                const st = await res.json();
+                if (st.mode === 'sta') {
+                    badge.textContent = `STA: ${st.ssid} (${st.ip || 'no IP'}, ${st.rssi} dBm)`;
+                } else if (st.mode === 'ap') {
+                    badge.textContent = `Setup AP: ${st.ssid} (${st.ip || '192.168.4.1'})`;
+                } else {
+                    badge.textContent = 'Wi-Fi: Disconnected';
+                }
+            } catch {
+                badge.textContent = 'Wi-Fi: Status unavailable';
+            }
+        }
+
+        async function scanWifi() {
+            const msg = document.getElementById('wifi-msg');
+            const dl = document.getElementById('wifi-ssid-list');
+            msg.textContent = 'Scanning nearby Wi-Fi networks...';
+            try {
+                const res = await fetch('/api/wifi/scan');
+                const data = await res.json();
+                dl.innerHTML = '';
+                (data.ssids || []).forEach((s) => {
+                    const opt = document.createElement('option');
+                    opt.value = s;
+                    dl.appendChild(opt);
+                });
+                msg.textContent = `Found ${(data.ssids || []).length} network(s). Pick or type SSID.`;
+            } catch {
+                msg.textContent = 'Scan failed.';
+            }
+        }
+
+        async function connectWifi() {
+            const ssid = document.getElementById('wifi-ssid').value.trim();
+            const password = document.getElementById('wifi-pass').value;
+            const msg = document.getElementById('wifi-msg');
+            if (!ssid) { msg.textContent = 'Enter an SSID first.'; return; }
+            msg.textContent = `Saving "${ssid}" and connecting...`;
+            try {
+                const res = await fetch('/api/wifi/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ssid, password })
+                });
+                const data = await res.json();
+                msg.textContent = data.ok
+                    ? `${data.message}. If using Setup AP, reconnect to "${ssid}" (or device falls back to Setup AP if connection fails).`
+                    : (data.error || 'Failed to save Wi-Fi config.');
+            } catch {
+                msg.textContent = 'Request failed.';
+            }
+        }
+
+        async function switchWifiAp() {
+            const msg = document.getElementById('wifi-msg');
+            msg.textContent = 'Switching to Setup AP (MaixCAM)...';
+            try {
+                await fetch('/api/wifi/ap', { method: 'POST' });
+                msg.textContent = 'Switched to Setup AP: MaixCAM (192.168.4.1).';
+            } catch {
+                msg.textContent = 'Request failed.';
+            }
+        }
+
+        refreshWifiStatus();
     </script>
 </body>
 </html>
