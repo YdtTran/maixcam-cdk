@@ -203,7 +203,7 @@ namespace maix::webrtc
         const int idle_sleep_us = g4c4_perf::env_int("MAIX_DIAG_VIDEO_SLEEP_US", 0);
         auto& vperf = g4c4_perf::stats().video;
         uint64_t cpu_prev = g4c4_perf::thread_cpu_ns();
-        std::vector<uint8_t> venc_buf;
+        rtc::binary venc_buf;
         venc_buf.reserve(131072);
 
         while (param->status == WEBRTC_RUNNING && !app::need_exit()) {
@@ -295,7 +295,7 @@ namespace maix::webrtc
 
             if (send_video_frame && param->webrtc_server && param->webrtc_server->is_video_track_open()) {
                 uint64_t tp0 = g4c4_perf::mono_ns();
-                param->webrtc_server->video_frame_push(venc_buf.data(), venc_output_data_size, video_pts);
+                param->webrtc_server->video_frame_push(venc_buf, video_pts);
                 vperf.webrtc_push_ns.fetch_add(g4c4_perf::mono_ns() - tp0, std::memory_order_relaxed);
                 vperf.frames_sent.fetch_add(1, std::memory_order_relaxed);
             }

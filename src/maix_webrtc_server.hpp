@@ -430,6 +430,30 @@ public:
         return 0;
     }
 
+    // Zero-extra-copy path for VENC frames already copied into caller-owned storage.
+    // The caller must keep the buffer alive until this synchronous send returns.
+    int video_frame_push(const rtc::binary &frame, uint64_t timestamp) {
+        if (frame.empty()) return -1;
+        std::shared_ptr<rtc::Track> track;
+        std::shared_ptr<rtc::RtpPacketizationConfig> rtp_cfg;
+        {
+            g4c4_perf::TimedLockGuard<std::mutex> lock(_media_mutex);
+            track = _video_track;
+            rtp_cfg = _video_rtp_config;
+        }
+        if (!track || !track->isOpen()) return -1;
+
+        std::lock_guard<std::mutex> send_lock(_video_send_mutex);
+        try {
+            if (rtp_cfg) rtp_cfg->timestamp = static_cast<uint32_t>(timestamp);
+            track->send(frame);
+        } catch (const std::exception &e) {
+            MAIX_WEBRTC_LOG("Error sending video frame: %s\n", e.what());
+            return -1;
+        }
+        return 0;
+    }
+
     int audio_frame_push(uint8_t *frame, size_t frame_size, uint64_t timestamp) {
         if (!_has_audio || !frame || frame_size == 0) {
             _audio_tx_failed.fetch_add(1, std::memory_order_relaxed);
