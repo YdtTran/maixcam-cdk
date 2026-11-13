@@ -56,7 +56,7 @@ start_sta() {
     n=0
     until iw dev wlan0 link 2>/dev/null | grep -q 'Connected to'; do
         n=$((n + 1))
-        [ "$n" -lt 15 ] || return 1
+        [ "$n" -lt 25 ] || return 1
         sleep 1
     done
     udhcpc -i wlan0 -p /run/udhcpc.wlan0.pid -t 6 -T 2 -n >/dev/null 2>&1 || return 1

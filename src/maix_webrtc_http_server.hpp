@@ -18,6 +18,7 @@
 #include <fstream>
 #include <vector>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <stdexcept>
 #include "maix_webrtc_audio_dsp.hpp"
 #include "g4c4_perf.hpp"
@@ -2303,6 +2304,7 @@ public:
                 res.set_content("{\"ok\":false,\"error\":\"Failed to commit wpa_supplicant.conf\"}", "application/json; charset=utf-8");
                 return;
             }
+            sync();
             res.set_content("{\"ok\":true,\"message\":\"Connecting to " + json_esc(ssid) + "\"}", "application/json; charset=utf-8");
             std::thread([]() {
                 std::this_thread::sleep_for(std::chrono::milliseconds(400));
