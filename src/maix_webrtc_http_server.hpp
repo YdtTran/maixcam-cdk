@@ -2081,12 +2081,97 @@ public:
             return true;
         }
 
-        _server->Get("/", [](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(WEBRTC_INDEX_HTML, "text/html; charset=utf-8");
+        auto is_setup_ap_req = [](const httplib::Request& req) {
+            return req.local_addr == "192.168.4.1" ||
+                   req.get_header_value("Host").rfind("192.168.4.1", 0) == 0;
+        };
+
+        static const char* WIFI_SETUP_HTML = R"HTML(<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MaixCAM Wi-Fi Setup</title>
+<style>
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;color:#e2e8f0;font-family:-apple-system,system-ui,sans-serif;padding:16px}
+.card{width:100%;max-width:380px;background:#1e293b;border:1px solid #334155;border-radius:14px;padding:20px;box-shadow:0 12px 32px rgba(0,0,0,.4)}
+h1{margin:0 0 6px;font-size:20px}p{margin:0 0 16px;font-size:13px;color:#94a3b8}
+label{display:block;font-size:12px;color:#cbd5e1;margin:10px 0 4px}
+input,select,button{width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;font-size:14px}
+input,select{background:#0f172a;color:#f8fafc;border:1px solid #475569}
+.row{display:flex;gap:8px}.row button{width:auto;white-space:nowrap}
+button{margin-top:12px;border:0;background:#2563eb;color:#fff;font-weight:600;cursor:pointer}
+button.sec{background:#334155;margin-top:0}
+#msg{margin-top:12px;font-size:13px;color:#93c5fd;min-height:18px}
+</style></head><body><div class="card">
+<h1>MaixCAM Wi-Fi Setup</h1>
+<p>Access point is for Wi-Fi setup only. Connect MaixCAM to your Wi-Fi network to stream video &amp; audio.</p>
+<label>Wi-Fi Network (SSID)</label>
+<div class="row"><input id="ssid" list="ssids" placeholder="Enter or scan SSID"><button class="sec" type="button" onclick="scan()">Scan</button></div>
+<datalist id="ssids"></datalist>
+<label>Password</label>
+<input id="pass" type="password" placeholder="Leave empty for open network">
+<button type="button" onclick="save()">Connect &amp; Migrate to Wi-Fi</button>
+<div id="msg"></div><div id="done" style="display:none;margin-top:12px;padding:12px;border-radius:10px;background:#0f172a;border:1px solid #22c55e">
+<div style="font-size:13px;color:#86efac;font-weight:600;margin-bottom:6px">Connected to Wi-Fi!</div>
+<div style="font-size:12px;color:#cbd5e1">Open this address after switching to your Wi-Fi:</div>
+<div id="sta-url" style="margin:6px 0 8px;font-size:15px;font-weight:700;color:#fff;word-break:break-all"></div>
+<button class="sec" type="button" onclick="closeAp()">Close Setup AP Now</button>
+</div></div>
+<script>
+async function scan(){
+  const m=document.getElementById('msg');m.textContent='Scanning...';
+  try{const r=await fetch('/api/wifi/scan');const d=await r.json();
+  const dl=document.getElementById('ssids');dl.innerHTML='';
+  (d.ssids||[]).forEach(s=>{const o=document.createElement('option');o.value=s;dl.appendChild(o);});
+  m.textContent=`Found ${(d.ssids||[]).length} network(s).`;}catch{m.textContent='Scan failed.';}
+}
+async function closeAp(){
+  const m=document.getElementById('msg');
+  try{await fetch('/api/wifi/close_ap',{method:'POST'});m.textContent='Setup AP closed. Switch your device to Wi-Fi and open the URL above.';}catch{}
+}
+async function save(){
+  const ssid=document.getElementById('ssid').value.trim(),password=document.getElementById('pass').value;
+  const m=document.getElementById('msg'),done=document.getElementById('done');
+  if(!ssid){m.textContent='Enter an SSID.';return;}
+  done.style.display='none';
+  m.textContent=`Connecting to ${ssid} (keeping Setup AP open)...`;
+  try{
+    const r=await fetch('/api/wifi/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,password})});
+    const d=await r.json();
+    if(!d.ok){m.textContent=d.error||'Failed.';return;}
+    for(let i=0;i<25;i++){
+      await new Promise(ok=>setTimeout(ok,1200));
+      const sr=await fetch('/api/wifi/status');const st=await sr.json();
+      if(st.sta_ip && (st.provision==='ok' || st.mode==='ap+sta' || st.mode==='sta')){
+        const url=`https://${st.sta_ip}:8000/`;
+        document.getElementById('sta-url').textContent=url;
+        done.style.display='block';
+        m.textContent='Setup AP will close automatically in ~12s.';
+        return;
+      }
+      if(st.provision==='fail'){
+        m.textContent='Connection failed (check SSID/password). Setup AP remains open.';
+        return;
+      }
+    }
+    m.textContent='Timed out waiting for IP. Setup AP remains open.';
+  }catch{m.textContent='Request failed.';}
+}
+scan();
+</script></body></html>)HTML";
+
+        _server->Get("/", [is_setup_ap_req](const httplib::Request& req, httplib::Response& res) {
+            if (is_setup_ap_req(req)) {
+                res.set_content(WIFI_SETUP_HTML, "text/html; charset=utf-8");
+            } else {
+                res.set_content(WEBRTC_INDEX_HTML, "text/html; charset=utf-8");
+            }
         });
 
-        _server->Get("/index.html", [](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(WEBRTC_INDEX_HTML, "text/html; charset=utf-8");
+        _server->Get("/index.html", [is_setup_ap_req](const httplib::Request& req, httplib::Response& res) {
+            if (is_setup_ap_req(req)) {
+                res.set_content(WIFI_SETUP_HTML, "text/html; charset=utf-8");
+            } else {
+                res.set_content(WEBRTC_INDEX_HTML, "text/html; charset=utf-8");
+            }
         });
 
         _server->Get("/client.js", [this](const httplib::Request& req, httplib::Response& res) {
@@ -2179,22 +2264,21 @@ public:
         };
 
         _server->Get("/api/wifi/status", [json_esc, run_cmd](const httplib::Request&, httplib::Response& res) {
-            std::string ip_out = run_cmd("ip -4 -o addr show dev wlan0 2>/dev/null");
-            std::string ip;
-            auto pos = ip_out.find("inet ");
-            if (pos != std::string::npos) {
+            auto parse_ip = [](const std::string& out) {
+                auto pos = out.find("inet ");
+                if (pos == std::string::npos) return std::string{};
                 pos += 5;
-                auto end = ip_out.find('/', pos);
-                if (end != std::string::npos) ip = ip_out.substr(pos, end - pos);
-            }
-            std::string link_out = run_cmd("iw dev wlan0 link 2>/dev/null");
-            std::string mode = "down", ssid;
+                auto end = out.find('/', pos);
+                return end == std::string::npos ? std::string{} : out.substr(pos, end - pos);
+            };
+            std::string sta_ip = parse_ip(run_cmd("ip -4 -o addr show dev wlan1 2>/dev/null"));
+            std::string ap_ip = parse_ip(run_cmd("ip -4 -o addr show dev wlan0 2>/dev/null"));
+            bool ap_up = (ap_ip == "192.168.4.1" || !run_cmd("pidof hostapd 2>/dev/null").empty());
+            std::string link_out = run_cmd("iw dev wlan1 link 2>/dev/null");
+            bool sta_up = (!sta_ip.empty() && link_out.find("Connected to") != std::string::npos);
+            std::string ssid;
             int rssi = 0;
-            if (ip == "192.168.4.1" || !run_cmd("pidof hostapd 2>/dev/null").empty()) {
-                mode = "ap";
-                ssid = "MaixCAM";
-            } else if (link_out.find("Connected to") != std::string::npos) {
-                mode = "sta";
+            if (sta_up) {
                 auto s = link_out.find("SSID: ");
                 if (s != std::string::npos) {
                     s += 6;
@@ -2204,9 +2288,27 @@ public:
                 }
                 auto r = link_out.find("signal: ");
                 if (r != std::string::npos) rssi = std::atoi(link_out.c_str() + r + 8);
+            } else if (ap_up) {
+                ssid = "MaixCAM";
+            }
+            std::string mode = (ap_up && sta_up) ? "ap+sta" : (sta_up ? "sta" : (ap_up ? "ap" : "down"));
+            std::string ip = sta_up ? sta_ip : ap_ip;
+            std::string prov = "idle";
+            {
+                std::ifstream pf("/run/maixcam-provision.state");
+                std::string line;
+                if (std::getline(pf, line)) {
+                    if (line.rfind("ok:", 0) == 0) {
+                        prov = "ok";
+                        if (sta_ip.empty()) sta_ip = line.substr(3);
+                    } else if (line == "connecting" || line == "fail") {
+                        prov = line;
+                    }
+                }
             }
             std::string body = "{\"mode\":\"" + mode + "\",\"ssid\":\"" + json_esc(ssid) +
-                               "\",\"ip\":\"" + json_esc(ip) + "\",\"rssi\":" + std::to_string(rssi) + "}";
+                               "\",\"ip\":\"" + json_esc(ip) + "\",\"sta_ip\":\"" + json_esc(sta_ip) +
+                               "\",\"rssi\":" + std::to_string(rssi) + ",\"provision\":\"" + prov + "\"}";
             res.set_content(body, "application/json; charset=utf-8");
         });
 
@@ -2307,8 +2409,16 @@ public:
             sync();
             res.set_content("{\"ok\":true,\"message\":\"Connecting to " + json_esc(ssid) + "\"}", "application/json; charset=utf-8");
             std::thread([]() {
-                std::this_thread::sleep_for(std::chrono::milliseconds(400));
-                (void)std::system("/root/maixcam_standalone_network.sh restart >/dev/null 2>&1");
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                (void)std::system("/root/maixcam_standalone_network.sh provision_sta >/dev/null 2>&1");
+            }).detach();
+        });
+
+        _server->Post("/api/wifi/close_ap", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content("{\"ok\":true}", "application/json; charset=utf-8");
+            std::thread([]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                (void)std::system("/root/maixcam_standalone_network.sh stop_ap >/dev/null 2>&1");
             }).detach();
         });
 

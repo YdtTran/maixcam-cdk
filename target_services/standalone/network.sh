@@ -1,12 +1,12 @@
 #!/bin/sh
-# Only wlan0 is owned here. USB, SSH, Bluetooth and other interfaces are untouched.
-# Normal operation connects wlan0 in STA mode via /etc/wpa_supplicant.conf.
-# Access point (192.168.4.1/24) is used as a fallback for Wi-Fi setup only.
+# wlan0 owns Setup AP (192.168.4.1/24); wlan1 owns STA Wi-Fi.
+# USB, SSH, Bluetooth and other interfaces are untouched.
 set -eu
 CONFIG=/etc/maixcam-standalone
 STATE=/root/maixcam-tests/standalone-web
 WPA_CONF=/etc/wpa_supplicant.conf
 FORCE_AP=/run/maixcam-force-ap
+PROV_STATE=/run/maixcam-provision.state
 
 alive() { [ -s "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 stop_pid() {
@@ -23,11 +23,14 @@ has_sta_config() {
     ' "$WPA_CONF"
 }
 
+ensure_wlan1() {
+    [ -e /sys/class/net/wlan1 ] || iw phy phy0 interface add wlan1 type managed
+}
+
 ready_sta() {
-    ! alive /run/maixcam-hostapd.pid &&
-    ip -4 addr show dev wlan0 2>/dev/null | grep -q 'inet ' &&
-    ! ip -4 addr show dev wlan0 2>/dev/null | grep -q '192.168.4.1/24' &&
-    iw dev wlan0 link 2>/dev/null | grep -q 'Connected to'
+    [ -e /sys/class/net/wlan1 ] &&
+    ip -4 addr show dev wlan1 2>/dev/null | grep -q 'inet ' &&
+    iw dev wlan1 link 2>/dev/null | grep -q 'Connected to'
 }
 
 ready_ap() {
@@ -40,26 +43,42 @@ ready() {
     ready_sta || ready_ap
 }
 
-stop() {
+stop_ap() {
     stop_pid /run/maixcam-dnsmasq.pid
     stop_pid /run/maixcam-hostapd.pid
+    killall hostapd dnsmasq >/dev/null 2>&1 || true
+    rm -rf /run/maixcam-hostapd /run/maixcam-ap-config
+    ip addr del 192.168.4.1/24 dev wlan0 2>/dev/null || true
+    ip -4 addr flush dev wlan0 2>/dev/null || true
+    ip link set wlan0 down 2>/dev/null || true
+}
+
+stop_sta() {
+    wpa_cli -i wlan1 terminate >/dev/null 2>&1 || true
     wpa_cli -i wlan0 terminate >/dev/null 2>&1 || true
     killall wpa_supplicant >/dev/null 2>&1 || true
+    stop_pid /run/udhcpc.wlan1.pid
     stop_pid /run/udhcpc.wlan0.pid
-    ip -4 addr flush dev wlan0 2>/dev/null || true
+    [ -e /sys/class/net/wlan1 ] && ip -4 addr flush dev wlan1 2>/dev/null || true
+}
+
+stop() {
+    stop_ap
+    stop_sta
 }
 
 start_sta() {
-    ip link set wlan0 up
-    ip -4 addr flush dev wlan0
-    wpa_supplicant -B -i wlan0 -c "$WPA_CONF" >/dev/null 2>&1 || return 1
+    ensure_wlan1 || return 1
+    ip link set wlan1 up
+    ip -4 addr flush dev wlan1 2>/dev/null || true
+    wpa_supplicant -B -i wlan1 -c "$WPA_CONF" >/dev/null 2>&1 || return 1
     n=0
-    until iw dev wlan0 link 2>/dev/null | grep -q 'Connected to'; do
+    until iw dev wlan1 link 2>/dev/null | grep -q 'Connected to'; do
         n=$((n + 1))
-        [ "$n" -lt 25 ] || return 1
+        [ "$n" -lt 12 ] || return 1
         sleep 1
     done
-    udhcpc -i wlan0 -p /run/udhcpc.wlan0.pid -t 6 -T 2 -n >/dev/null 2>&1 || return 1
+    udhcpc -i wlan1 -p /run/udhcpc.wlan1.pid -t 6 -T 2 -n >/dev/null 2>&1 || return 1
     ready_sta
 }
 
@@ -81,12 +100,30 @@ start_ap() {
     if ! start_radio "$CONFIG/hostapd.conf"; then
         stop_pid /run/maixcam-hostapd.pid
         if [ ! -f "$CONFIG/hostapd-fallback.conf" ] || ! start_radio "$CONFIG/hostapd-fallback.conf"; then
-            stop
+            stop_ap
             return 1
         fi
     fi
-    dnsmasq --conf-file="$CONFIG/dnsmasq.conf" || { stop; return 1; }
+    dnsmasq --conf-file="$CONFIG/dnsmasq.conf" || { stop_ap; return 1; }
     ready_ap
+}
+
+provision_sta() {
+    rm -f "$FORCE_AP"
+    echo "connecting" > "$PROV_STATE"
+    stop_sta
+    if start_sta; then
+        ip=$(ip -4 -o addr show dev wlan1 | awk '{print $4}' | cut -d/ -f1 | head -n1)
+        echo "ok:$ip" > "$PROV_STATE"
+        # Keep Setup AP alive briefly so the browser displays the new IP, then close AP.
+        sleep 12
+        stop_ap
+        echo "idle" > "$PROV_STATE"
+        return 0
+    fi
+    stop_sta
+    echo "fail" > "$PROV_STATE"
+    return 1
 }
 
 start() {
@@ -99,7 +136,7 @@ start() {
         if start_sta; then
             return 0
         fi
-        stop
+        stop_sta
     fi
     start_ap
 }
@@ -107,6 +144,8 @@ start() {
 case "${1:-status}" in
     start) start ;;
     stop) stop ;;
+    stop_ap) stop_ap ;;
+    provision_sta) provision_sta ;;
     restart) rm -f "$FORCE_AP"; stop; start ;;
     ap) touch "$FORCE_AP"; stop; start_ap ;;
     status) ready ;;
