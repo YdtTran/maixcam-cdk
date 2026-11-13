@@ -2,6 +2,7 @@
 
 #include "rtc/rtc.hpp"
 #include "nlohmann/json.hpp"
+#include "g4c4_perf.hpp"
 #include <string>
 #include <memory>
 #include <iostream>
@@ -75,6 +76,7 @@ public:
 
             _is_running = true;
             _watchdog = std::thread([this]() {
+                g4c4_perf::set_thread_name("sig_wdog");
                 std::unique_lock<std::mutex> lock(_clients_mutex);
                 while (_is_running) {
                     _watch_cv.wait_for(lock, std::chrono::seconds(5));

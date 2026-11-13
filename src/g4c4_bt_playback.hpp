@@ -13,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "g4c4_perf.hpp"
 
 /**
  * @brief Dedicated Bluetooth ALSA PCM Playback Worker for MaixCAM.
@@ -311,16 +312,28 @@ private:
     }
 
     void worker_loop() {
+        g4c4_perf::set_thread_name("bt_playback");
+        auto& pperf = g4c4_perf::stats().playback;
+        uint64_t cpu_prev = g4c4_perf::thread_cpu_ns();
         while (!stopping_) {
+            uint64_t cpu_now = g4c4_perf::thread_cpu_ns();
+            pperf.thread_cpu_ns.fetch_add(cpu_now - cpu_prev, std::memory_order_relaxed);
+            cpu_prev = cpu_now;
             Chunk chunk;
             bool do_drop = false;
             bool from_queue = false;
 
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait_for(lock, std::chrono::milliseconds(20), [this] {
-                    return stopping_ || !queue_.empty() || need_pcm_drop_;
-                });
+                if (!talk_active_ && !pcm_handle_ && !need_pcm_drop_) {
+                    cv_.wait(lock, [this] {
+                        return stopping_ || talk_active_ || need_pcm_drop_ || !queue_.empty();
+                    });
+                } else {
+                    cv_.wait_for(lock, std::chrono::milliseconds(20), [this] {
+                        return stopping_ || !queue_.empty() || need_pcm_drop_;
+                    });
+                }
 
                 if (stopping_) break;
 
@@ -390,17 +403,21 @@ private:
                 auto t0 = std::chrono::steady_clock::now();
                 snd_pcm_sframes_t written = snd_pcm_writei(pcm_handle_, ptr, remaining);
                 auto t1 = std::chrono::steady_clock::now();
-                last_write_us_.store(
-                    std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count(),
-                    std::memory_order_relaxed
-                );
+                const int64_t wr_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+                last_write_us_.store(wr_us, std::memory_order_relaxed);
+                pperf.write_calls.fetch_add(1, std::memory_order_relaxed);
+                pperf.alsa_write_ns.fetch_add(static_cast<uint64_t>(wr_us) * 1000ULL, std::memory_order_relaxed);
 
                 if (written > 0) {
+                    if (static_cast<size_t>(written) < remaining) {
+                        pperf.partial_count.fetch_add(1, std::memory_order_relaxed);
+                    }
                     frames_written_.fetch_add(written, std::memory_order_relaxed);
                     ptr += (written * channels_);
                     remaining -= written;
                     eagain_retries = 0;
                 } else if (written == -EAGAIN || written == -EINTR) {
+                    pperf.eagain_count.fetch_add(1, std::memory_order_relaxed);
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     if (++eagain_retries > 30) {
                         dropped_overflow_.fetch_add(1, std::memory_order_relaxed);
@@ -428,6 +445,7 @@ private:
                     }
                     eagain_retries = 0;
                 } else if (written == 0) {
+                    pperf.zero_count.fetch_add(1, std::memory_order_relaxed);
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 } else {
                     int rec = snd_pcm_recover(pcm_handle_, written, 1);

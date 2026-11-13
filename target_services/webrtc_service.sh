@@ -109,6 +109,11 @@ start() {
     prepare_bluetooth_controller
     connect_bluetooth_mic
 
+    # Silence verbose Wi-Fi/BT SDIO debug logging (saves ~5-8% klogd/syslogd CPU)
+    if [ -w /sys/module/aic8800_fdrv/parameters/aicwf_dbg_level ]; then
+        echo 0 > /sys/module/aic8800_fdrv/parameters/aicwf_dbg_level 2>/dev/null || true
+    fi
+
     cd "$STAGE"
     export LD_LIBRARY_PATH="$STAGE/dl_lib:/usr/lib:/lib"
     export MAIX_WEBRTC_AUDIO_SOURCE="mic"

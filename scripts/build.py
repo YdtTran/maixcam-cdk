@@ -63,7 +63,7 @@ def main():
     ], check=True)
 
     print("1. Compiling C++ candidate object...")
-    compile_cmd = list(meta["compile_argv"])
+    compile_cmd = ["-O2" if a == "-Os" else a for a in meta["compile_argv"]]
     src_idx = compile_cmd.index("-c") + 1
     compile_cmd[src_idx] = str(SRC)
     out_idx = compile_cmd.index("-o") + 1

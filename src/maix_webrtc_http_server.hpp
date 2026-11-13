@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include "maix_webrtc_audio_dsp.hpp"
+#include "g4c4_perf.hpp"
 #ifndef CPPHTTPLIB_OPENSSL_SUPPORT
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #endif
@@ -31,6 +32,7 @@ private:
     std::unique_ptr<std::thread> _server_thread;
     std::atomic<bool> _is_running;
     std::function<std::string()> _metrics_callback;
+    std::function<std::string()> _perf_metrics_callback;
     std::function<void(bool)> _talk_callback;
     std::shared_ptr<maix::webrtc::MaixAudioUplinkDSP> _audio_dsp;
 
@@ -2016,6 +2018,14 @@ public:
             }
         });
 
+        _server->Get("/api/perf_stats", [this](const httplib::Request& req, httplib::Response& res) {
+            if (_perf_metrics_callback) {
+                res.set_content(_perf_metrics_callback(), "application/json; charset=utf-8");
+            } else {
+                res.set_content("{\"status\":\"no_perf_provider\"}", "application/json; charset=utf-8");
+            }
+        });
+
         _server->Get("/api/audio_dsp", [this](const httplib::Request& req, httplib::Response& res) {
             if (_audio_dsp) {
                 res.set_content(_audio_dsp->get_metrics_json(), "application/json; charset=utf-8");
@@ -2065,6 +2075,7 @@ public:
 
         _is_running = true;
         _server_thread = std::make_unique<std::thread>([this]() {
+            g4c4_perf::set_thread_name("http_srv");
             MAIX_WEBRTC_LOG("[HttpServer] Starting on http://%s:%d\n", _host.c_str(), _port);
             MAIX_WEBRTC_LOG("[HttpServer] Serving embedded WebRTC client interface\n");
 
@@ -2108,6 +2119,10 @@ public:
 
     void set_metrics_callback(std::function<std::string()> cb) {
         _metrics_callback = std::move(cb);
+    }
+
+    void set_perf_metrics_callback(std::function<std::string()> cb) {
+        _perf_metrics_callback = std::move(cb);
     }
 
     void set_talk_callback(std::function<void(bool)> cb) {

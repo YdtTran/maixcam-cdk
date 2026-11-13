@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include "g4c4_opus_rx.hpp"
+#include "g4c4_perf.hpp"
 #include "maix_webrtc_audio_dsp.hpp"
 #include "rtc/rtc.hpp"
 #include "nlohmann/json.hpp"
@@ -58,7 +59,11 @@ private:
 
     // Protect tracks, peer handle and RTP configs during reconnection/sending.
     std::mutex _media_mutex;
+    std::mutex _video_send_mutex;
+    std::mutex _audio_send_mutex;
     std::mutex _reset_mutex;
+    rtc::binary _video_send_buf;
+    rtc::binary _audio_send_buf;
     bool _has_audio;
     VideoCodec _video_codec;
 
@@ -396,22 +401,27 @@ public:
     }
 
     int video_frame_push(uint8_t *frame, size_t frame_size, uint64_t timestamp) {
-        std::lock_guard<std::mutex> lock(_media_mutex);
-        if (!_video_track || !_video_track->isOpen() || !frame || frame_size == 0) {
+        if (!frame || frame_size == 0) return -1;
+        std::shared_ptr<rtc::Track> track;
+        std::shared_ptr<rtc::RtpPacketizationConfig> rtp_cfg;
+        {
+            g4c4_perf::TimedLockGuard<std::mutex> lock(_media_mutex);
+            track = _video_track;
+            rtp_cfg = _video_rtp_config;
+        }
+        if (!track || !track->isOpen()) {
             return -1;
         }
 
+        std::lock_guard<std::mutex> send_lock(_video_send_mutex);
         try {
-            if (_video_rtp_config) {
-                _video_rtp_config->timestamp = static_cast<uint32_t>(timestamp);
+            if (rtp_cfg) {
+                rtp_cfg->timestamp = static_cast<uint32_t>(timestamp);
             }
 
-            rtc::binary video_frame;
-            video_frame.reserve(frame_size);
-            for (size_t i = 0; i < frame_size; ++i) {
-                video_frame.push_back(static_cast<std::byte>(frame[i]));
-            }
-            _video_track->send(video_frame);
+            _video_send_buf.resize(frame_size);
+            std::memcpy(_video_send_buf.data(), frame, frame_size);
+            track->send(_video_send_buf);
         } catch (const std::exception &e) {
             MAIX_WEBRTC_LOG("Error sending video frame: %s\n", e.what());
             return -1;
@@ -421,26 +431,30 @@ public:
     }
 
     int audio_frame_push(uint8_t *frame, size_t frame_size, uint64_t timestamp) {
-        std::lock_guard<std::mutex> lock(_media_mutex);
-        if (!_audio_track || !_audio_track->isOpen() || !_has_audio || !frame || frame_size == 0) {
+        if (!_has_audio || !frame || frame_size == 0) {
+            _audio_tx_failed.fetch_add(1, std::memory_order_relaxed);
+            return -1;
+        }
+        std::shared_ptr<rtc::Track> track;
+        std::shared_ptr<rtc::RtpPacketizationConfig> rtp_cfg;
+        {
+            g4c4_perf::TimedLockGuard<std::mutex> lock(_media_mutex);
+            track = _audio_track;
+            rtp_cfg = _audio_rtp_config;
+        }
+        if (!track || !track->isOpen() || !rtp_cfg) {
             _audio_tx_failed.fetch_add(1, std::memory_order_relaxed);
             return -1;
         }
 
+        std::lock_guard<std::mutex> send_lock(_audio_send_mutex);
         try {
-            if (!_audio_rtp_config) {
-                _audio_tx_failed.fetch_add(1, std::memory_order_relaxed);
-                return -1;
-            }
             // Caller supplies elapsed 48 kHz audio samples, not wall-clock milliseconds.
-            _audio_rtp_config->timestamp =
-                _audio_rtp_config->startTimestamp + static_cast<uint32_t>(timestamp);
-            rtc::binary audio_frame;
-            audio_frame.reserve(frame_size);
-            for (size_t i = 0; i < frame_size; ++i) {
-                audio_frame.push_back(static_cast<std::byte>(frame[i]));
-            }
-            _audio_track->send(audio_frame);
+            rtp_cfg->timestamp =
+                rtp_cfg->startTimestamp + static_cast<uint32_t>(timestamp);
+            _audio_send_buf.resize(frame_size);
+            std::memcpy(_audio_send_buf.data(), frame, frame_size);
+            track->send(_audio_send_buf);
             _audio_tx_sent.fetch_add(1, std::memory_order_relaxed);
             _audio_tx_bytes.fetch_add(frame_size, std::memory_order_relaxed);
         } catch (const std::exception &e) {
@@ -472,12 +486,12 @@ public:
     }
 
     bool is_video_track_open() {
-        std::lock_guard<std::mutex> lock(_media_mutex);
+        g4c4_perf::TimedLockGuard<std::mutex> lock(_media_mutex);
         return _video_track && _video_track->isOpen();
     }
 
     bool is_audio_track_open() {
-        std::lock_guard<std::mutex> lock(_media_mutex);
+        g4c4_perf::TimedLockGuard<std::mutex> lock(_media_mutex);
         return _audio_track && _audio_track->isOpen();
     }
 
@@ -631,6 +645,53 @@ public:
             root["downlink"] = nullptr;
         }
 
+        return root.dump();
+    }
+
+    std::string get_perf_stats_json() {
+        const auto& s = g4c4_perf::stats();
+        json root;
+        root["video"] = {
+            {"loop_iters", s.video.loop_iters.load(std::memory_order_relaxed)},
+            {"vi_pops", s.video.vi_pops.load(std::memory_order_relaxed)},
+            {"vi_empty", s.video.vi_empty.load(std::memory_order_relaxed)},
+            {"venc_pops", s.video.venc_pops.load(std::memory_order_relaxed)},
+            {"venc_empty", s.video.venc_empty.load(std::memory_order_relaxed)},
+            {"frames_sent", s.video.frames_sent.load(std::memory_order_relaxed)},
+            {"vi_pop_ns", s.video.vi_pop_ns.load(std::memory_order_relaxed)},
+            {"venc_pop_ns", s.video.venc_pop_ns.load(std::memory_order_relaxed)},
+            {"copy_ns", s.video.copy_ns.load(std::memory_order_relaxed)},
+            {"webrtc_push_ns", s.video.webrtc_push_ns.load(std::memory_order_relaxed)},
+            {"venc_push_ns", s.video.venc_push_ns.load(std::memory_order_relaxed)},
+            {"thread_cpu_ns", s.video.thread_cpu_ns.load(std::memory_order_relaxed)}
+        };
+        root["mic"] = {
+            {"read_calls", s.mic.read_calls.load(std::memory_order_relaxed)},
+            {"empty_reads", s.mic.empty_reads.load(std::memory_order_relaxed)},
+            {"frames_encoded", s.mic.frames_encoded.load(std::memory_order_relaxed)},
+            {"read_ns", s.mic.read_ns.load(std::memory_order_relaxed)},
+            {"opus_encode_ns", s.mic.opus_encode_ns.load(std::memory_order_relaxed)},
+            {"webrtc_push_ns", s.mic.webrtc_push_ns.load(std::memory_order_relaxed)},
+            {"thread_cpu_ns", s.mic.thread_cpu_ns.load(std::memory_order_relaxed)}
+        };
+        root["rx"] = {
+            {"packets_decoded", s.rx.packets_decoded.load(std::memory_order_relaxed)},
+            {"opus_decode_ns", s.rx.opus_decode_ns.load(std::memory_order_relaxed)},
+            {"thread_cpu_ns", s.rx.thread_cpu_ns.load(std::memory_order_relaxed)}
+        };
+        root["playback"] = {
+            {"write_calls", s.playback.write_calls.load(std::memory_order_relaxed)},
+            {"eagain_count", s.playback.eagain_count.load(std::memory_order_relaxed)},
+            {"partial_count", s.playback.partial_count.load(std::memory_order_relaxed)},
+            {"zero_count", s.playback.zero_count.load(std::memory_order_relaxed)},
+            {"alsa_write_ns", s.playback.alsa_write_ns.load(std::memory_order_relaxed)},
+            {"thread_cpu_ns", s.playback.thread_cpu_ns.load(std::memory_order_relaxed)}
+        };
+        root["mutex"] = {
+            {"media_locks", s.mutex.media_locks.load(std::memory_order_relaxed)},
+            {"media_wait_ns", s.mutex.media_wait_ns.load(std::memory_order_relaxed)},
+            {"media_hold_ns", s.mutex.media_hold_ns.load(std::memory_order_relaxed)}
+        };
         return root.dump();
     }
 
@@ -977,6 +1038,9 @@ public:
             }
             new_server->_http_server->set_metrics_callback([new_server]() {
                 return new_server->get_audio_metrics_json();
+            });
+            new_server->_http_server->set_perf_metrics_callback([new_server]() {
+                return new_server->get_perf_stats_json();
             });
             new_server->_http_server->set_talk_callback([new_server](bool active) {
                 new_server->set_talk_state(active);

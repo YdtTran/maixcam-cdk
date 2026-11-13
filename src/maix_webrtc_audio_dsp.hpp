@@ -22,9 +22,24 @@ public:
     static constexpr size_t MAX_ACCUMULATOR_SAMPLES = FRAME_SAMPLES * 5;
     static constexpr int64_t PERIODIC_FLUSH_MS = 5000;
 
-    MaixAudioUplinkDSP()
-        : last_flush_(std::chrono::steady_clock::now()) {
-        accumulator_.reserve(MAX_ACCUMULATOR_SAMPLES);
+    explicit MaixAudioUplinkDSP(int sample_rate = 48000, size_t frame_samples = 960)
+        : sample_rate_(sample_rate),
+          frame_samples_(frame_samples),
+          frame_bytes_(frame_samples * sizeof(int16_t)),
+          max_accumulator_samples_(frame_samples * 5),
+          last_flush_(std::chrono::steady_clock::now()) {
+        accumulator_.reserve(max_accumulator_samples_);
+    }
+
+    void configure(int sample_rate, size_t frame_samples) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sample_rate_ = sample_rate;
+        frame_samples_ = frame_samples;
+        frame_bytes_ = frame_samples * sizeof(int16_t);
+        max_accumulator_samples_ = frame_samples * 5;
+        accumulator_.clear();
+        accumulator_.reserve(max_accumulator_samples_);
+        last_flush_ = std::chrono::steady_clock::now();
     }
 
     void reset() {
@@ -38,13 +53,13 @@ public:
         size_t samples_in = bytes / sizeof(int16_t);
         const auto *src = static_cast<const int16_t *>(data);
         std::lock_guard<std::mutex> lock(mutex_);
-        if (samples_in > MAX_ACCUMULATOR_SAMPLES) {
-            src += samples_in - MAX_ACCUMULATOR_SAMPLES;
-            samples_in = MAX_ACCUMULATOR_SAMPLES;
+        if (samples_in > max_accumulator_samples_) {
+            src += samples_in - max_accumulator_samples_;
+            samples_in = max_accumulator_samples_;
             accumulator_.clear();
             overflow_count_.fetch_add(1, std::memory_order_relaxed);
-        } else if (accumulator_.size() + samples_in > MAX_ACCUMULATOR_SAMPLES) {
-            const size_t drop = accumulator_.size() + samples_in - MAX_ACCUMULATOR_SAMPLES;
+        } else if (accumulator_.size() + samples_in > max_accumulator_samples_) {
+            const size_t drop = accumulator_.size() + samples_in - max_accumulator_samples_;
             accumulator_.erase(accumulator_.begin(), accumulator_.begin() + drop);
             overflow_count_.fetch_add(1, std::memory_order_relaxed);
         }
@@ -53,8 +68,8 @@ public:
         const auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_flush_).count() >= PERIODIC_FLUSH_MS) {
             last_flush_ = now;
-            if (accumulator_.size() >= FRAME_SAMPLES * 2) {
-                const size_t drop = ((accumulator_.size() / FRAME_SAMPLES) - 1) * FRAME_SAMPLES;
+            if (accumulator_.size() >= frame_samples_ * 2) {
+                const size_t drop = ((accumulator_.size() / frame_samples_) - 1) * frame_samples_;
                 accumulator_.erase(accumulator_.begin(), accumulator_.begin() + drop);
                 overflow_count_.fetch_add(1, std::memory_order_relaxed);
             }
@@ -63,7 +78,7 @@ public:
 
     bool has_frame() {
         std::lock_guard<std::mutex> lock(mutex_);
-        return accumulator_.size() >= FRAME_SAMPLES;
+        return accumulator_.size() >= frame_samples_;
     }
 
     size_t queued_samples() {
@@ -76,9 +91,9 @@ public:
     bool pop_and_process_frame(int16_t *out_frame) {
         if (!out_frame) return false;
         std::lock_guard<std::mutex> lock(mutex_);
-        if (accumulator_.size() < FRAME_SAMPLES) return false;
-        std::memcpy(out_frame, accumulator_.data(), FRAME_BYTES);
-        accumulator_.erase(accumulator_.begin(), accumulator_.begin() + FRAME_SAMPLES);
+        if (accumulator_.size() < frame_samples_) return false;
+        std::memcpy(out_frame, accumulator_.data(), frame_bytes_);
+        accumulator_.erase(accumulator_.begin(), accumulator_.begin() + frame_samples_);
         frames_bypassed_.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
@@ -96,6 +111,10 @@ public:
     }
 
 private:
+    int sample_rate_ = 48000;
+    size_t frame_samples_ = FRAME_SAMPLES;
+    size_t frame_bytes_ = FRAME_BYTES;
+    size_t max_accumulator_samples_ = MAX_ACCUMULATOR_SAMPLES;
     std::mutex mutex_;
     std::vector<int16_t> accumulator_;
     std::chrono::steady_clock::time_point last_flush_;

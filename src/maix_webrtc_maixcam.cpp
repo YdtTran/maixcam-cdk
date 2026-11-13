@@ -18,6 +18,7 @@
 #include "maix_webrtc_server.hpp"
 #include "maix_webrtc_audio_dsp.hpp"
 #include "g4c4_bt_capture.hpp"
+#include "g4c4_perf.hpp"
 #include "nlohmann/json.hpp"
 #include <vector>
 #include <string>
@@ -193,13 +194,20 @@ namespace maix::webrtc
 
     static void _camera_push_thread(void *args)
     {
+        g4c4_perf::set_thread_name("cam_push");
         webrtc_param_t *param = (webrtc_param_t *)args;
 
         int vi_ch = param->camera->get_channel();
         size_t video_pts = 0;
         bool found_first_pps_sps = false;
+        const int idle_sleep_us = g4c4_perf::env_int("MAIX_DIAG_VIDEO_SLEEP_US", 0);
+        auto& vperf = g4c4_perf::stats().video;
+        uint64_t cpu_prev = g4c4_perf::thread_cpu_ns();
+        std::vector<uint8_t> venc_buf;
+        venc_buf.reserve(131072);
 
         while (param->status == WEBRTC_RUNNING && !app::need_exit()) {
+            vperf.loop_iters.fetch_add(1, std::memory_order_relaxed);
             bool found_camera_frame = false;
             bool found_venc_stream = false;
             void *frame = NULL;
@@ -209,15 +217,32 @@ namespace maix::webrtc
 
             if (param->webrtc_server == nullptr || !param->webrtc_server->is_video_track_open()) {
                 time::sleep_ms(10);
+                uint64_t cpu_now = g4c4_perf::thread_cpu_ns();
+                vperf.thread_cpu_ns.fetch_add(cpu_now - cpu_prev, std::memory_order_relaxed);
+                cpu_prev = cpu_now;
                 continue;
             }
 
-            if (0 == mmf_vi_frame_pop2(vi_ch, &frame, &f_info) && frame) {
-                found_camera_frame = true;
+            {
+                uint64_t t0 = g4c4_perf::mono_ns();
+                if (0 == mmf_vi_frame_pop2(vi_ch, &frame, &f_info) && frame) {
+                    found_camera_frame = true;
+                    vperf.vi_pops.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    vperf.vi_empty.fetch_add(1, std::memory_order_relaxed);
+                }
+                vperf.vi_pop_ns.fetch_add(g4c4_perf::mono_ns() - t0, std::memory_order_relaxed);
             }
 
-            if (0 == mmf_venc_pop(enc_ch, &venc_stream) && venc_stream.count > 0) {
-                found_venc_stream = true;
+            {
+                uint64_t t0 = g4c4_perf::mono_ns();
+                if (0 == mmf_venc_pop(enc_ch, &venc_stream) && venc_stream.count > 0) {
+                    found_venc_stream = true;
+                    vperf.venc_pops.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    vperf.venc_empty.fetch_add(1, std::memory_order_relaxed);
+                }
+                vperf.venc_pop_ns.fetch_add(g4c4_perf::mono_ns() - t0, std::memory_order_relaxed);
             }
 
             if (found_venc_stream) {
@@ -229,27 +254,27 @@ namespace maix::webrtc
                 }
 
                 if (found_first_pps_sps) {
-                    int venc_output_data_size = 0;
-                    uint8_t *venc_output_data = nullptr;
+                    size_t venc_output_data_size = 0;
                     for (int i = 0; i < venc_stream.count; i ++) {
                         venc_output_data_size += venc_stream.data_size[i];
                     }
 
-                    venc_output_data = (uint8_t *)malloc(venc_output_data_size);
-                    if (venc_output_data) {
-                        int curr_data_size = 0;
-                        for (int i = 0; i < venc_stream.count; i ++) {
-                            memcpy(venc_output_data + curr_data_size, venc_stream.data[i], venc_stream.data_size[i]);
-                            curr_data_size += venc_stream.data_size[i];
-                        }
+                    uint64_t tc0 = g4c4_perf::mono_ns();
+                    venc_buf.resize(venc_output_data_size);
+                    size_t curr_data_size = 0;
+                    for (int i = 0; i < venc_stream.count; i ++) {
+                        memcpy(venc_buf.data() + curr_data_size, venc_stream.data[i], venc_stream.data_size[i]);
+                        curr_data_size += venc_stream.data_size[i];
+                    }
+                    vperf.copy_ns.fetch_add(g4c4_perf::mono_ns() - tc0, std::memory_order_relaxed);
 
-                        video_pts = get_video_timestamp();
+                    video_pts = get_video_timestamp();
 
-                        if (param->webrtc_server && param->webrtc_server->is_video_track_open()) {
-                            param->webrtc_server->video_frame_push(venc_output_data, venc_output_data_size, video_pts);
-                        }
-
-                        free(venc_output_data);
+                    if (param->webrtc_server && param->webrtc_server->is_video_track_open()) {
+                        uint64_t tp0 = g4c4_perf::mono_ns();
+                        param->webrtc_server->video_frame_push(venc_buf.data(), venc_output_data_size, video_pts);
+                        vperf.webrtc_push_ns.fetch_add(g4c4_perf::mono_ns() - tp0, std::memory_order_relaxed);
+                        vperf.frames_sent.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
             }
@@ -261,12 +286,20 @@ namespace maix::webrtc
             }
 
             if (found_camera_frame) {
+                uint64_t te0 = g4c4_perf::mono_ns();
                 if (0 != mmf_venc_push2(enc_ch, frame)) {
                     log::error("mmf_venc_push2 failed!\r\n");
                 }
 
                 mmf_vi_frame_free2(vi_ch, &frame);
+                vperf.venc_push_ns.fetch_add(g4c4_perf::mono_ns() - te0, std::memory_order_relaxed);
+            } else if (!found_venc_stream && idle_sleep_us > 0) {
+                std::this_thread::sleep_for(std::chrono::microseconds(idle_sleep_us));
             }
+
+            uint64_t cpu_now = g4c4_perf::thread_cpu_ns();
+            vperf.thread_cpu_ns.fetch_add(cpu_now - cpu_prev, std::memory_order_relaxed);
+            cpu_prev = cpu_now;
         }
 
         // Lifecycle/status is owned by WebRTC::stop().
@@ -276,6 +309,7 @@ namespace maix::webrtc
     // Test-only synthetic audio: one 20 ms Opus frame per 960 mono PCM samples.
     static void _opus_tone_thread(webrtc_param_t *param)
     {
+        g4c4_perf::set_thread_name("opus_tone");
         constexpr int rate = 48000;
         constexpr int frame_samples = 960;
         constexpr double phase_step = 6.28318530717958647692 * 440.0 / rate;
@@ -329,12 +363,21 @@ namespace maix::webrtc
     // to avoid sending stale PCM following a reconnect.
     static void _opus_mic_thread(webrtc_param_t *param)
     {
-        constexpr int rate = 48000;
-        constexpr int frame_samples = 960;
+        g4c4_perf::set_thread_name("opus_mic");
+        if (g4c4_perf::env_flag("MAIX_DIAG_DISABLE_BT_CAPTURE")) {
+            log::info("MAIX_DIAG_DISABLE_BT_CAPTURE=1: BT capture & Opus uplink disabled");
+            while (param->status == WEBRTC_RUNNING && !app::need_exit()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            return;
+        }
+        constexpr int rate = 8000;
+        constexpr int frame_samples = 160;
+        constexpr uint64_t rtp_frame_samples = 960; // 48 kHz WebRTC RTP clock per 20 ms
 
         std::unique_ptr<G4c4BtCapture> recorder;
         try {
-            recorder.reset(new G4c4BtCapture());
+            recorder.reset(new G4c4BtCapture(rate));
         } catch (const std::exception &e) {
             log::error("Bluetooth microphone initialization: %s", e.what());
             return;
@@ -353,16 +396,19 @@ namespace maix::webrtc
             return;
         }
 
+        const int opus_complexity = g4c4_perf::env_int("MAIX_DIAG_OPUS_COMPLEXITY", 3);
         opus_encoder_ctl(encoder.get(), OPUS_SET_BITRATE(24000));
-        opus_encoder_ctl(encoder.get(), OPUS_SET_COMPLEXITY(5));
+        opus_encoder_ctl(encoder.get(), OPUS_SET_COMPLEXITY(opus_complexity));
 
         auto dsp = param->audio_dsp;
         if (!dsp) {
-            dsp = std::make_shared<maix::webrtc::MaixAudioUplinkDSP>();
+            dsp = std::make_shared<maix::webrtc::MaixAudioUplinkDSP>(rate, frame_samples);
             param->audio_dsp = dsp;
             if (param->webrtc_server) {
                 param->webrtc_server->set_audio_dsp(dsp);
             }
+        } else {
+            dsp->configure(rate, frame_samples);
         }
 
         std::array<opus_int16, frame_samples> pcm{};
@@ -384,9 +430,9 @@ namespace maix::webrtc
             const auto now = std::chrono::steady_clock::now();
             const auto gap_us = std::chrono::duration_cast<
                 std::chrono::microseconds>(now - last_capture).count();
-            const uint64_t lost = static_cast<uint64_t>(gap_us) * rate / 1000000
-                                + (dsp ? dsp->queued_bytes() : 0) / sizeof(opus_int16);
-            sample_cursor += ((lost + frame_samples - 1) / frame_samples) * frame_samples;
+            const uint64_t lost = static_cast<uint64_t>(gap_us) * 48000 / 1000000
+                                + (dsp ? (dsp->queued_bytes() / sizeof(opus_int16)) * (48000 / rate) : 0);
+            sample_cursor += ((lost + rtp_frame_samples - 1) / rtp_frame_samples) * rtp_frame_samples;
             if (dsp) dsp->reset();
             log::warn("G4c resetting stalled Bluetooth PCM, attempt=%u", recovery_attempts);
             try {
@@ -404,7 +450,9 @@ namespace maix::webrtc
         };
 
 
-        log::info("Bluetooth microphone worker started: 48000 Hz mono (hands-free, raw audio)");
+        log::info("Bluetooth microphone worker started: %d Hz mono (complexity=%d)", rate, opus_complexity);
+        auto& mperf = g4c4_perf::stats().mic;
+        uint64_t cpu_prev = g4c4_perf::thread_cpu_ns();
 
         while (param->status == WEBRTC_RUNNING && !app::need_exit()) {
             const bool track_open =
@@ -419,7 +467,10 @@ namespace maix::webrtc
 
             const std::vector<int16_t> *chunk = nullptr;
             try {
+                uint64_t tr0 = g4c4_perf::mono_ns();
+                mperf.read_calls.fetch_add(1, std::memory_order_relaxed);
                 chunk = &recorder->read();
+                mperf.read_ns.fetch_add(g4c4_perf::mono_ns() - tr0, std::memory_order_relaxed);
             } catch (const std::exception &e) {
                 log::error("Bluetooth microphone read: %s", e.what());
                 if (!recover_capture()) break;
@@ -432,6 +483,7 @@ namespace maix::webrtc
             const size_t n = chunk ? chunk->size() * sizeof(int16_t) : 0;
 
             if (n == 0) {
+                mperf.empty_reads.fetch_add(1, std::memory_order_relaxed);
                 if (std::chrono::steady_clock::now() - last_capture >
                     std::chrono::milliseconds(2000)) {
                     if (!recover_capture()) break;
@@ -441,6 +493,9 @@ namespace maix::webrtc
                 std::this_thread::sleep_for(
                     std::chrono::milliseconds(5)
                 );
+                uint64_t cpu_now = g4c4_perf::thread_cpu_ns();
+                mperf.thread_cpu_ns.fetch_add(cpu_now - cpu_prev, std::memory_order_relaxed);
+                cpu_prev = cpu_now;
                 continue;
             }
 
@@ -461,6 +516,7 @@ namespace maix::webrtc
                     param->webrtc_server &&
                     param->webrtc_server->is_audio_track_open()) {
 
+                    uint64_t te0 = g4c4_perf::mono_ns();
                     int size = opus_encode(
                         encoder.get(),
                         pcm.data(),
@@ -468,7 +524,10 @@ namespace maix::webrtc
                         encoded.data(),
                         static_cast<opus_int32>(encoded.size())
                     );
+                    mperf.opus_encode_ns.fetch_add(g4c4_perf::mono_ns() - te0, std::memory_order_relaxed);
+                    mperf.frames_encoded.fetch_add(1, std::memory_order_relaxed);
 
+                    uint64_t tp0 = g4c4_perf::mono_ns();
                     if (size > 0 &&
                         param->webrtc_server->audio_frame_push(
                             encoded.data(),
@@ -479,12 +538,13 @@ namespace maix::webrtc
                     } else {
                         ++failed;
                     }
+                    mperf.webrtc_push_ns.fetch_add(g4c4_perf::mono_ns() - tp0, std::memory_order_relaxed);
                 } else {
                     ++dropped;
                 }
 
-                // RTP audio timestamp advances by captured sample count.
-                sample_cursor += frame_samples;
+                // RTP audio timestamp advances by 48 kHz clock samples per 20 ms frame.
+                sample_cursor += rtp_frame_samples;
 
                 if ((sent + failed) != 0 &&
                     (sent + failed) % 250 == 0) {
@@ -494,6 +554,10 @@ namespace maix::webrtc
                     );
                 }
             }
+
+            uint64_t cpu_now = g4c4_perf::thread_cpu_ns();
+            mperf.thread_cpu_ns.fetch_add(cpu_now - cpu_prev, std::memory_order_relaxed);
+            cpu_prev = cpu_now;
         }
 
         log::info(

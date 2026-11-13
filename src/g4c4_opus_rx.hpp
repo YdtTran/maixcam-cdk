@@ -17,6 +17,8 @@
 
 #include "g4c4_resampler.hpp"
 #include "g4c4_bt_playback.hpp"
+#include "g4c4_perf.hpp"
+#include <cmath>
 
 /**
  * @brief Dedicated Opus Downlink Receiver and Decoder Worker for MaixCAM.
@@ -101,6 +103,10 @@ public:
         uint8_t payload_type
     ) {
         packets_received_.fetch_add(1, std::memory_order_relaxed);
+        if (diag_disable_rx_) {
+            dropped_inactive_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
 
         if (!data || size == 0 || size > 4096) {
             dropped_busy_.fetch_add(1, std::memory_order_relaxed);
@@ -170,6 +176,26 @@ private:
     };
 
     void run() {
+        g4c4_perf::set_thread_name("opus_rx");
+        if (g4c4_perf::env_flag("MAIX_DIAG_LOCAL_PCM_PLAYBACK")) {
+            std::array<int16_t, 160> tone{};
+            double phase = 0.0;
+            const double step = 6.28318530717958647692 * 440.0 / 8000.0;
+            auto next = std::chrono::steady_clock::now();
+            while (!stopping_) {
+                if (playback_ && talk_active_.load(std::memory_order_relaxed)) {
+                    for (size_t i = 0; i < tone.size(); ++i) {
+                        tone[i] = static_cast<int16_t>(std::sin(phase) * 8000.0);
+                        phase += step;
+                        if (phase >= 6.28318530717958647692) phase -= 6.28318530717958647692;
+                    }
+                    playback_->enqueue_pcm(tone.data(), tone.size());
+                }
+                next += std::chrono::milliseconds(20);
+                std::this_thread::sleep_until(next);
+            }
+            return;
+        }
         int error = OPUS_OK;
         OpusDecoder* decoder = opus_decoder_create(
             8000, 1, &error
@@ -186,6 +212,8 @@ private:
         // 8000 Hz * 0.120 s = 960 mono samples.
         std::array<opus_int16, 960> pcm{};
         std::vector<int16_t> stereo_resampled;
+        auto& rperf = g4c4_perf::stats().rx;
+        uint64_t cpu_prev = g4c4_perf::thread_cpu_ns();
 
         for (;;) {
             Packet packet;
@@ -219,12 +247,16 @@ private:
 
             if (packet.bytes.empty()) {
                 // Stream idle: notify playback worker to flush any stale tail
-                if (playback_) {
+                if (playback_ && !diag_disable_pb_) {
                     playback_->notify_stream_idle();
                 }
+                uint64_t cpu_now = g4c4_perf::thread_cpu_ns();
+                rperf.thread_cpu_ns.fetch_add(cpu_now - cpu_prev, std::memory_order_relaxed);
+                cpu_prev = cpu_now;
                 continue;
             }
 
+            uint64_t td0 = g4c4_perf::mono_ns();
             int samples = opus_decode(
                 decoder,
                 packet.bytes.data(),
@@ -233,6 +265,8 @@ private:
                 static_cast<int>(pcm.size()),
                 0
             );
+            rperf.opus_decode_ns.fetch_add(g4c4_perf::mono_ns() - td0, std::memory_order_relaxed);
+            rperf.packets_decoded.fetch_add(1, std::memory_order_relaxed);
 
             if (samples < 0) {
                 const uint64_t failures = decode_errors_.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -242,24 +276,33 @@ private:
                         samples,
                         static_cast<unsigned long long>(failures));
                 }
+                uint64_t cpu_now = g4c4_perf::thread_cpu_ns();
+                rperf.thread_cpu_ns.fetch_add(cpu_now - cpu_prev, std::memory_order_relaxed);
+                cpu_prev = cpu_now;
                 continue;
             }
 
             const uint64_t decoded_total = packets_decoded_.fetch_add(1, std::memory_order_relaxed) + 1;
             samples_decoded_.fetch_add(static_cast<uint64_t>(samples), std::memory_order_relaxed);
 
-            if (playback_ && playback_->uses_native_sco()) {
-                // CVSD already uses the decoder's 8 kHz mono S16 format.
-                if (talk_active_.load(std::memory_order_relaxed))
-                    playback_->enqueue_pcm(pcm.data(), static_cast<size_t>(samples));
-            } else {
-                // Retain conversion only for explicitly selected A2DP playback.
-                resampler_.process(pcm.data(), static_cast<size_t>(samples), stereo_resampled);
-                if (playback_ && talk_active_.load(std::memory_order_relaxed)) {
-                    playback_->enqueue_pcm(stereo_resampled.data(),
-                        static_cast<size_t>(samples * G4c4Resampler::RATIO));
+            if (!diag_disable_pb_) {
+                if (playback_ && playback_->uses_native_sco()) {
+                    // CVSD already uses the decoder's 8 kHz mono S16 format.
+                    if (talk_active_.load(std::memory_order_relaxed))
+                        playback_->enqueue_pcm(pcm.data(), static_cast<size_t>(samples));
+                } else {
+                    // Retain conversion only for explicitly selected A2DP playback.
+                    resampler_.process(pcm.data(), static_cast<size_t>(samples), stereo_resampled);
+                    if (playback_ && talk_active_.load(std::memory_order_relaxed)) {
+                        playback_->enqueue_pcm(stereo_resampled.data(),
+                            static_cast<size_t>(samples * G4c4Resampler::RATIO));
+                    }
                 }
             }
+
+            uint64_t cpu_now = g4c4_perf::thread_cpu_ns();
+            rperf.thread_cpu_ns.fetch_add(cpu_now - cpu_prev, std::memory_order_relaxed);
+            cpu_prev = cpu_now;
 
             if (decoded_total == 1 || decoded_total % 250 == 0) {
                 auto pb_stats = playback_ ? playback_->get_stats() : G4c4BtPlayback::Stats{};
@@ -291,6 +334,8 @@ private:
     std::deque<Packet> queue_;
     bool stopping_ = false;
     bool need_decoder_reset_ = false;
+    const bool diag_disable_rx_ = g4c4_perf::env_flag("MAIX_DIAG_DISABLE_OPUS_RX");
+    const bool diag_disable_pb_ = g4c4_perf::env_flag("MAIX_DIAG_DISABLE_BT_PLAYBACK");
     std::atomic<bool> talk_active_{true};
 
     // Monotonic metrics tracking (PLAN-07)
