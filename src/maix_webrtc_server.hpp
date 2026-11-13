@@ -343,7 +343,7 @@ public:
 
             if (_video_track) {
                 _video_rtp_config = std::make_shared<rtc::RtpPacketizationConfig>(ssrc, "video-stream", 96, rtc::H264RtpPacketizer::ClockRate);
-                auto packetizer = std::make_shared<rtc::H264RtpPacketizer>(rtc::NalUnit::Separator::StartSequence, _video_rtp_config);
+                auto packetizer = std::make_shared<rtc::H264RtpPacketizer>(rtc::NalUnit::Separator::StartSequence, _video_rtp_config, 1360);
                 auto srReporter = std::make_shared<rtc::RtcpSrReporter>(_video_rtp_config);
                 packetizer->addToChain(srReporter);
 

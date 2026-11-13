@@ -56,14 +56,14 @@ def main():
     shim_out.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([
         str(compiler.with_name("riscv64-unknown-linux-musl-gcc")),
-        "-shared", "-fPIC", "-O2", "-mcpu=c906fdv",
+        "-shared", "-fPIC", "-O3", "-mcpu=c906fdv",
         "-march=rv64imafdcv0p7xthead", "-mcmodel=medany", "-mabi=lp64d",
         str(ROOT / "src/g4c4_sco_write_align.c"), "-ldl", "-pthread",
         "-o", str(shim_out)
     ], check=True)
 
     print("1. Compiling C++ candidate object...")
-    compile_cmd = ["-O2" if a == "-Os" else a for a in meta["compile_argv"]]
+    compile_cmd = ["-O3" if a == "-Os" else a for a in meta["compile_argv"]]
     src_idx = compile_cmd.index("-c") + 1
     compile_cmd[src_idx] = str(SRC)
     out_idx = compile_cmd.index("-o") + 1

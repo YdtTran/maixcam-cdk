@@ -245,6 +245,9 @@ namespace maix::webrtc
                 vperf.venc_pop_ns.fetch_add(g4c4_perf::mono_ns() - t0, std::memory_order_relaxed);
             }
 
+            bool send_video_frame = false;
+            size_t venc_output_data_size = 0;
+
             if (found_venc_stream) {
                 if (!found_first_pps_sps) {
                     if (venc_stream.count > 1) {
@@ -254,7 +257,6 @@ namespace maix::webrtc
                 }
 
                 if (found_first_pps_sps) {
-                    size_t venc_output_data_size = 0;
                     for (int i = 0; i < venc_stream.count; i ++) {
                         venc_output_data_size += venc_stream.data_size[i];
                     }
@@ -269,22 +271,16 @@ namespace maix::webrtc
                     vperf.copy_ns.fetch_add(g4c4_perf::mono_ns() - tc0, std::memory_order_relaxed);
 
                     video_pts = get_video_timestamp();
-
-                    if (param->webrtc_server && param->webrtc_server->is_video_track_open()) {
-                        uint64_t tp0 = g4c4_perf::mono_ns();
-                        param->webrtc_server->video_frame_push(venc_buf.data(), venc_output_data_size, video_pts);
-                        vperf.webrtc_push_ns.fetch_add(g4c4_perf::mono_ns() - tp0, std::memory_order_relaxed);
-                        vperf.frames_sent.fetch_add(1, std::memory_order_relaxed);
-                    }
+                    send_video_frame = true;
                 }
-            }
 
-            if (found_venc_stream) {
                 if (0 != mmf_venc_free(enc_ch)) {
                     log::error("mmf_venc_free failed!\r\n");
                 }
             }
 
+            // Submit the next VI frame to hardware VENC before blocking in WebRTC send
+            // so hardware H.264 encoding overlaps with RTP packetization/SRTP/UDP send.
             if (found_camera_frame) {
                 uint64_t te0 = g4c4_perf::mono_ns();
                 if (0 != mmf_venc_push2(enc_ch, frame)) {
@@ -295,6 +291,13 @@ namespace maix::webrtc
                 vperf.venc_push_ns.fetch_add(g4c4_perf::mono_ns() - te0, std::memory_order_relaxed);
             } else if (!found_venc_stream && idle_sleep_us > 0) {
                 std::this_thread::sleep_for(std::chrono::microseconds(idle_sleep_us));
+            }
+
+            if (send_video_frame && param->webrtc_server && param->webrtc_server->is_video_track_open()) {
+                uint64_t tp0 = g4c4_perf::mono_ns();
+                param->webrtc_server->video_frame_push(venc_buf.data(), venc_output_data_size, video_pts);
+                vperf.webrtc_push_ns.fetch_add(g4c4_perf::mono_ns() - tp0, std::memory_order_relaxed);
+                vperf.frames_sent.fetch_add(1, std::memory_order_relaxed);
             }
 
             uint64_t cpu_now = g4c4_perf::thread_cpu_ns();
@@ -396,7 +399,7 @@ namespace maix::webrtc
             return;
         }
 
-        const int opus_complexity = g4c4_perf::env_int("MAIX_DIAG_OPUS_COMPLEXITY", 3);
+        const int opus_complexity = g4c4_perf::env_int("MAIX_DIAG_OPUS_COMPLEXITY", 1);
         opus_encoder_ctl(encoder.get(), OPUS_SET_BITRATE(24000));
         opus_encoder_ctl(encoder.get(), OPUS_SET_COMPLEXITY(opus_complexity));
 
