@@ -894,9 +894,18 @@
 
                 <div id="tab-audio-content" style="display:none; flex-direction:column; flex:1; min-height:0; padding:12px; gap:12px;">
                     <div class="spec-list">
-                        <div class="spec-row"><span class="spec-name">Earbuds to browser</span><span class="spec-val">Raw microphone audio &rarr; Opus WebRTC</span></div>
-                        <div class="spec-row"><span class="spec-name">Browser to earbuds</span><span class="spec-val">Direct microphone track &rarr; Opus &rarr; Bluetooth</span></div>
-                        <div class="spec-row"><span class="spec-name">Audio processing</span><span class="spec-val">Off</span></div>
+                        <div class="spec-row"><span class="spec-name">Noise suppression</span><span id="noise-status" class="spec-val" role="status">Talk is off</span></div>
+                        <div class="spec-row"><label class="spec-name" for="noise-mix">Filter strength</label><input id="noise-mix" type="range" min="0" max="100" value="100" aria-describedby="noise-mix-value"><output id="noise-mix-value">100%</output></div>
+                        <div class="spec-row"><label class="spec-name" for="noise-input">Mic input</label><meter id="noise-input" min="0" max="1" value="0">0</meter></div>
+                        <div class="spec-row"><label class="spec-name" for="noise-output">Filtered output</label><meter id="noise-output" min="0" max="1" value="0">0</meter></div>
+                        <div class="spec-row"><label class="spec-name" for="earbud-volume">Earbuds playback</label><input id="earbud-volume" type="range" min="0" max="15" step="1" disabled aria-describedby="earbud-volume-value"><output id="earbud-volume-value" role="status">Checking…</output></div>
+                        <div class="spec-row"><label class="spec-name" for="earbud-mic-volume">Earbuds microphone</label><input id="earbud-mic-volume" type="range" min="0" max="15" step="1" disabled aria-describedby="earbud-mic-volume-value"><output id="earbud-mic-volume-value" role="status">Checking…</output></div>
+                        <div class="spec-row"><label class="spec-name" for="earbud-mic-boost">Microphone boost</label><input id="earbud-mic-boost" type="range" min="100" max="300" step="10" disabled aria-describedby="earbud-mic-boost-value"><output id="earbud-mic-boost-value" role="status">Checking…</output></div>
+                    </div>
+                    <div class="spec-list">
+                        <div class="spec-row"><span class="spec-name">Earbuds to browser</span><span class="spec-val">Microphone boost &rarr; Opus WebRTC</span></div>
+                        <div class="spec-row"><span class="spec-name">Browser to earbuds</span><span class="spec-val">Microphone &rarr; noise suppression &rarr; Opus &rarr; Bluetooth</span></div>
+                        <div class="spec-row"><span class="spec-name">Audio processing</span><span class="spec-val">RNNoise on browser microphone when supported</span></div>
                     </div>
                 </div>
 

@@ -14,6 +14,15 @@ def main():
 
     client_js = client_js_file.read_text(encoding='utf-8')
 
+    demo_dir = ROOT / 'demo/rnnoise'
+    demo_header = ROOT / 'src/rnnoise_demo_assets.hpp'
+    assets = [('RNNOISE_DEMO_HTML', 'index.html'),
+              ('RNNOISE_DEMO_PROCESSOR', 'processor.js'),
+              ('RNNOISE_DEMO_MODULE', 'rnnoise-sync.js')]
+    demo_header.write_text('#pragma once\n' + ''.join(
+        f'static constexpr const char {name}[] = R"DEMOASSET({(demo_dir / filename).read_text(encoding="utf-8")})DEMOASSET";\n'
+        for name, filename in assets), encoding='utf-8')
+
     with open(server_header, 'r', encoding='utf-8') as f:
         orig = f.read()
 

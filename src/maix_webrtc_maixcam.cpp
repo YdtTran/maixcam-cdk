@@ -519,6 +519,8 @@ namespace maix::webrtc
                     param->webrtc_server &&
                     param->webrtc_server->is_audio_track_open()) {
 
+                    maix::webrtc::apply_earbud_mic_boost(pcm.data(), pcm.size(),
+                        maix::webrtc::earbud_mic_boost_percent.load(std::memory_order_relaxed));
                     uint64_t te0 = g4c4_perf::mono_ns();
                     int size = opus_encode(
                         encoder.get(),

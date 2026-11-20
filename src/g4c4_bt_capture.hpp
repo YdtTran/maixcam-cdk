@@ -33,7 +33,7 @@ public:
         if (pcm_) return;
         const char *configured = std::getenv("MAIX_WEBRTC_BT_CAPTURE_DEVICE");
         const char *device = configured && *configured ? configured
-            : "bluealsa:DEV=6C:16:29:7B:00:D4,PROFILE=sco";
+            : "bluealsa:DEV=6C:16:29:7B:00:D4,PROFILE=sco,SOFTVOL=yes";
         int result = snd_pcm_open(&pcm_, device, SND_PCM_STREAM_CAPTURE,
                                   SND_PCM_NONBLOCK);
         if (result < 0) {

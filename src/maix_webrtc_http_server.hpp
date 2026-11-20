@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include "maix_webrtc_audio_dsp.hpp"
 #include "g4c4_perf.hpp"
+#include "rnnoise_demo_assets.hpp"
 #ifndef CPPHTTPLIB_OPENSSL_SUPPORT
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #endif
@@ -938,9 +939,18 @@ private:
 
                 <div id="tab-audio-content" style="display:none; flex-direction:column; flex:1; min-height:0; padding:12px; gap:12px;">
                     <div class="spec-list">
-                        <div class="spec-row"><span class="spec-name">Earbuds to browser</span><span class="spec-val">Raw microphone audio &rarr; Opus WebRTC</span></div>
-                        <div class="spec-row"><span class="spec-name">Browser to earbuds</span><span class="spec-val">Direct microphone track &rarr; Opus &rarr; Bluetooth</span></div>
-                        <div class="spec-row"><span class="spec-name">Audio processing</span><span class="spec-val">Off</span></div>
+                        <div class="spec-row"><span class="spec-name">Noise suppression</span><span id="noise-status" class="spec-val" role="status">Talk is off</span></div>
+                        <div class="spec-row"><label class="spec-name" for="noise-mix">Filter strength</label><input id="noise-mix" type="range" min="0" max="100" value="100" aria-describedby="noise-mix-value"><output id="noise-mix-value">100%</output></div>
+                        <div class="spec-row"><label class="spec-name" for="noise-input">Mic input</label><meter id="noise-input" min="0" max="1" value="0">0</meter></div>
+                        <div class="spec-row"><label class="spec-name" for="noise-output">Filtered output</label><meter id="noise-output" min="0" max="1" value="0">0</meter></div>
+                        <div class="spec-row"><label class="spec-name" for="earbud-volume">Earbuds playback</label><input id="earbud-volume" type="range" min="0" max="15" step="1" disabled aria-describedby="earbud-volume-value"><output id="earbud-volume-value" role="status">Checking…</output></div>
+                        <div class="spec-row"><label class="spec-name" for="earbud-mic-volume">Earbuds microphone</label><input id="earbud-mic-volume" type="range" min="0" max="15" step="1" disabled aria-describedby="earbud-mic-volume-value"><output id="earbud-mic-volume-value" role="status">Checking…</output></div>
+                        <div class="spec-row"><label class="spec-name" for="earbud-mic-boost">Microphone boost</label><input id="earbud-mic-boost" type="range" min="100" max="300" step="10" disabled aria-describedby="earbud-mic-boost-value"><output id="earbud-mic-boost-value" role="status">Checking…</output></div>
+                    </div>
+                    <div class="spec-list">
+                        <div class="spec-row"><span class="spec-name">Earbuds to browser</span><span class="spec-val">Microphone boost &rarr; Opus WebRTC</span></div>
+                        <div class="spec-row"><span class="spec-name">Browser to earbuds</span><span class="spec-val">Microphone &rarr; noise suppression &rarr; Opus &rarr; Bluetooth</span></div>
+                        <div class="spec-row"><span class="spec-name">Audio processing</span><span class="spec-val">RNNoise on browser microphone when supported</span></div>
                     </div>
                 </div>
 
@@ -1632,6 +1642,8 @@ const clientId = randomId(10);
     let dc = null;
     let localStream = null;
     let localMicTrack = null;
+    let filteredTrack = null;
+    let filterContext = null;
     let silentAudioTrack = null;
     let audioTransceiver = null;
     let isListening = false;
@@ -1643,6 +1655,59 @@ const clientId = randomId(10);
     const connText = document.getElementById('conn-text');
     const remoteAudio = document.getElementById('remote-audio');
     const fullscreenBtn = document.getElementById('fullscreen-btn');
+    const noiseStatus = document.getElementById('noise-status');
+    const noiseInput = document.getElementById('noise-input');
+    const noiseOutput = document.getElementById('noise-output');
+    const noiseMix = document.getElementById('noise-mix');
+    const noiseMixValue = document.getElementById('noise-mix-value');
+    let noiseProcessor = null;
+
+    if (noiseMix) noiseMix.oninput = () => {
+        if (noiseMixValue) noiseMixValue.textContent = noiseMix.value + '%';
+        if (noiseProcessor) noiseProcessor.port.postMessage({ mix: Number(noiseMix.value) / 100 });
+    };
+    function bindEarbudVolume(id, fullVolume = 15) {
+        const slider = document.getElementById(id);
+        const label = document.getElementById(id + '-value');
+        if (!slider || !label) return;
+        const url = '/api/' + id;
+        async function readVolume() {
+            try {
+                const response = await fetch(url, { cache: 'no-store' });
+                if (!response.ok) throw new Error('unavailable');
+                const { volume } = await response.json();
+                slider.value = volume;
+                slider.disabled = false;
+                label.textContent = Math.round(volume * 100 / fullVolume) + '%';
+            } catch (_) {
+                slider.disabled = true;
+                label.textContent = 'Unavailable';
+            }
+        }
+        slider.onchange = async () => {
+            slider.disabled = true;
+            try {
+                const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: slider.value });
+                if (!response.ok) throw new Error('unavailable');
+                await readVolume();
+            } catch (_) {
+                await readVolume();
+                label.textContent = 'Could not set volume';
+            }
+        };
+        readVolume();
+    }
+    bindEarbudVolume('earbud-volume');
+    bindEarbudVolume('earbud-mic-volume');
+    bindEarbudVolume('earbud-mic-boost', 100);
+
+    function updateNoiseStatus() {
+        if (noiseStatus) noiseStatus.textContent = !isTalking ? 'Talk is off' : filteredTrack ? 'RNNoise active' : 'Unavailable — unfiltered microphone';
+        if (!isTalking || !filteredTrack) {
+            if (noiseInput) noiseInput.value = 0;
+            if (noiseOutput) noiseOutput.value = 0;
+        }
+    }
 
     const MIC_MUTED_SVG = '<svg class="icon" viewBox="0 0 24 24"><path d="m18.54 18.54a10.8 10.8 0 0 1-6.54 2.46c-5.52 0-10-4.48-10-10 0-2.45.88-4.7 2.34-6.46"/><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><line x1="1" x2="23" y1="1" y2="23"/></svg>';
     const MIC_LIVE_SVG = '<svg class="icon" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>';
@@ -1670,7 +1735,7 @@ const clientId = randomId(10);
         if (!isTalking) {
             return getSilentTrack();
         }
-        return localMicTrack || getSilentTrack();
+        return filteredTrack || localMicTrack || getSilentTrack();
     }
 
     websocket.onopen = () => {
@@ -1687,6 +1752,7 @@ const clientId = randomId(10);
         clearInterval(heartbeat);
         stopTalk();
         if (localStream) localStream.getTracks().forEach(track => track.stop());
+        if (filterContext) filterContext.close();
         if (pc) pc.close();
         setTimeout(() => location.reload(), 4000 + Math.random() * 2000);
         if (connBadge && connText) {
@@ -1858,13 +1924,14 @@ const clientId = randomId(10);
         };
     }
 
-    // --- CALL-APP TALK BUTTON (DIRECT MICROPHONE TRACK) ---
+    // --- CALL-APP TALK BUTTON ---
     async function toggleTalk() {
         if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
             alert('Microphone requires HTTPS with the MaixCAM certificate authority trusted on this device.');
             return;
         }
         if (!localStream || !localMicTrack) {
+            if (talkBtn) talkBtn.disabled = true;
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({
                     audio: {
@@ -1877,18 +1944,45 @@ const clientId = randomId(10);
 
                 localMicTrack = localStream.getAudioTracks()[0];
                 localMicTrack.enabled = true;
-
-                const trackToSend = getAudioTrackToSend();
-                if (trackToSend) trackToSend.enabled = true;
-
-                if (audioTransceiver && audioTransceiver.sender && trackToSend) {
-                    await audioTransceiver.sender.replaceTrack(trackToSend);
+                try {
+                    filterContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+                    if (filterContext.sampleRate !== 48000) throw new Error('48 kHz audio unavailable');
+                    await filterContext.audioWorklet.addModule('/demo/rnnoise/processor.js');
+                    const source = filterContext.createMediaStreamSource(localStream);
+                    const processor = new AudioWorkletNode(filterContext, 'rnnoise');
+                    noiseProcessor = processor;
+                    processor.port.postMessage({ mix: Number(noiseMix?.value ?? 100) / 100 });
+                    processor.port.onmessage = ({ data }) => {
+                        if (!isTalking || !filteredTrack) return;
+                        const level = rms => Math.max(0, Math.min(1, (20 * Math.log10(Math.max(rms, 0.001)) + 60) / 60));
+                        if (noiseInput) noiseInput.value = level(data.input);
+                        if (noiseOutput) noiseOutput.value = level(data.output);
+                    };
+                    const destination = filterContext.createMediaStreamDestination();
+                    source.connect(processor).connect(destination);
+                    filteredTrack = destination.stream.getAudioTracks()[0];
+                    processor.onprocessorerror = () => {
+                        filteredTrack = null;
+                        noiseProcessor = null;
+                        updateNoiseStatus();
+                        console.warn('[Audio] RNNoise failed; using original microphone');
+                        if (isTalking && audioTransceiver?.sender) audioTransceiver.sender.replaceTrack(localMicTrack).catch(console.warn);
+                    };
+                    await filterContext.resume();
+                } catch (error) {
+                    console.warn('[Audio] RNNoise unavailable; using original microphone:', error);
+                    filteredTrack = null;
+                    noiseProcessor = null;
+                    if (filterContext) await filterContext.close();
+                    filterContext = null;
                 }
-
-                startTalk();
+                if (document.hidden) localMicTrack.enabled = false;
+                else await startTalk();
             } catch (err) {
                 console.error('[Audio] Microphone permission error:', err);
                 alert('Microphone permission required to talk: ' + err.message);
+            } finally {
+                if (talkBtn) talkBtn.disabled = false;
             }
             return;
         }
@@ -1922,6 +2016,7 @@ const clientId = randomId(10);
     async function startTalk() {
         if (isTalking) return;
         isTalking = true;
+        updateNoiseStatus();
 
         if (localMicTrack) localMicTrack.enabled = true;
 
@@ -1948,6 +2043,7 @@ const clientId = randomId(10);
     async function stopTalk() {
         if (!isTalking) return;
         isTalking = false;
+        updateNoiseStatus();
 
         if (localMicTrack) {
             localMicTrack.enabled = false;
@@ -2174,6 +2270,16 @@ scan();
             }
         });
 
+        _server->Get("/demo/rnnoise/", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content(RNNOISE_DEMO_HTML, "text/html; charset=utf-8");
+        });
+        _server->Get("/demo/rnnoise/processor.js", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content(RNNOISE_DEMO_PROCESSOR, "application/javascript; charset=utf-8");
+        });
+        _server->Get("/demo/rnnoise/rnnoise-sync.js", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content(RNNOISE_DEMO_MODULE, "application/javascript; charset=utf-8");
+        });
+
         _server->Get("/client.js", [this](const httplib::Request& req, httplib::Response& res) {
             std::string js_content = std::string(WEBRTC_CLIENT_JS);
             const std::string old_port = ":8001/";
@@ -2186,6 +2292,61 @@ scan();
             pos = js_content.find(marker);
             if (pos != std::string::npos) js_content.replace(pos, marker.size(), token ? token : "");
             res.set_content(js_content, "application/javascript; charset=utf-8");
+        });
+
+        auto register_earbud_volume = [this](const char *path, bool capture) {
+            _server->Get(path, [capture](const httplib::Request&, httplib::Response& res) {
+                FILE *fp = popen("amixer -D bluealsa sget 'EDIFIER X2 Plus SCO' 2>/dev/null", "r");
+                int volume = -1;
+                if (fp) {
+                    char line[512];
+                    while (fgets(line, sizeof(line), fp)) {
+                        const char *mono = std::strstr(line, "Mono: ");
+                        if (!mono) continue;
+                        const char *field = std::strstr(mono, capture ? "Capture " : "Playback ");
+                        if (field) std::sscanf(field + (capture ? 8 : 9), "%d", &volume);
+                    }
+                    if (pclose(fp) != 0) volume = -1;
+                }
+                if (volume < 0 || volume > 15) {
+                    res.status = 503;
+                    res.set_content("Earbuds unavailable", "text/plain");
+                    return;
+                }
+                res.set_content("{\"volume\":" + std::to_string(volume) + "}", "application/json");
+            });
+            _server->Post(path, [capture](const httplib::Request& req, httplib::Response& res) {
+                if (req.body.empty() || req.body.size() > 2 || req.body.find_first_not_of("0123456789") != std::string::npos) {
+                    res.status = 400;
+                    return;
+                }
+                int volume = std::stoi(req.body);
+                if (volume > 15) { res.status = 400; return; }
+                const std::string command = std::string("amixer -D bluealsa sset 'EDIFIER X2 Plus SCO' ")
+                    + (capture ? "capture " : "playback ") + std::to_string(volume) + " >/dev/null 2>&1";
+                if (std::system(command.c_str()) != 0) { res.status = 503; return; }
+                res.set_content("{\"ok\":true}", "application/json");
+            });
+        };
+        register_earbud_volume("/api/earbud-volume", false);
+        register_earbud_volume("/api/earbud-mic-volume", true);
+
+        _server->Get("/api/earbud-mic-boost", [](const httplib::Request&, httplib::Response& res) {
+            const int percent = maix::webrtc::earbud_mic_boost_percent.load(std::memory_order_relaxed);
+            res.set_content("{\"volume\":" + std::to_string(percent) + "}", "application/json");
+        });
+        _server->Post("/api/earbud-mic-boost", [](const httplib::Request& req, httplib::Response& res) {
+            if (req.body.size() != 3 || req.body.find_first_not_of("0123456789") != std::string::npos) {
+                res.status = 400;
+                return;
+            }
+            const int percent = std::stoi(req.body);
+            if (percent < 100 || percent > 300) {
+                res.status = 400;
+                return;
+            }
+            maix::webrtc::earbud_mic_boost_percent.store(percent, std::memory_order_relaxed);
+            res.set_content("{\"ok\":true}", "application/json");
         });
 
         _server->Get("/api/audio_stats", [this](const httplib::Request& req, httplib::Response& res) {
