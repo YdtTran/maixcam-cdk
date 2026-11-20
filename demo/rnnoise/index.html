@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RNNoise microphone demo</title>
+<style>
+body { font: 16px system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+button { font: inherit; padding: .6rem 1rem; margin: .3rem .3rem .3rem 0; }
+</style>
+<h1>Microphone noise suppression demo</h1>
+<p>Use headphones to avoid feedback. Start the microphone, then switch between the original and RNNoise-filtered sound. Audio stays on this device.</p>
+<button id="start">Start microphone</button>
+<button id="stop" disabled>Stop</button>
+<p><label><input type="checkbox" id="filtered" checked> RNNoise filtering</label></p>
+<p id="status" role="status">Ready</p>
+<script type="module">
+const start = document.querySelector('#start');
+const stop = document.querySelector('#stop');
+const filtered = document.querySelector('#filtered');
+const status = document.querySelector('#status');
+let context, stream;
+start.onclick = async () => {
+    start.disabled = true;
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { noiseSuppression: false, echoCancellation: false, autoGainControl: false }, video: false });
+        context = new AudioContext({ sampleRate: 48000 });
+        if (context.sampleRate !== 48000) throw new Error('This device cannot open 48 kHz audio');
+        await context.audioWorklet.addModule('./processor.js');
+        const source = context.createMediaStreamSource(stream);
+        const denoiser = new AudioWorkletNode(context, 'rnnoise');
+        const rawGain = context.createGain();
+        const filteredGain = context.createGain();
+        source.connect(rawGain).connect(context.destination);
+        source.connect(denoiser).connect(filteredGain).connect(context.destination);
+        const update = () => {
+            rawGain.gain.value = filtered.checked ? 0 : 1;
+            filteredGain.gain.value = filtered.checked ? 1 : 0;
+        };
+        filtered.onchange = update;
+        update();
+        await context.resume();
+        stop.disabled = false;
+        status.textContent = 'Listening locally. Switch filtering on and off to compare.';
+    } catch (error) {
+        stream?.getTracks().forEach(track => track.stop());
+        if (context) await context.close();
+        start.disabled = false;
+        status.textContent = 'Could not start: ' + error.message;
+    }
+};
+stop.onclick = async () => {
+    stop.disabled = true;
+    stream.getTracks().forEach(track => track.stop());
+    await context.close();
+    start.disabled = false;
+    status.textContent = 'Stopped';
+};
+</script>
+</html>

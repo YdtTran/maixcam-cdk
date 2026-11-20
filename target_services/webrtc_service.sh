@@ -41,7 +41,7 @@ connect_bluetooth_mic() {
     fi
 
     if bluealsa-aplay -L 2>/dev/null | grep -q "DEV=${target_mac},PROFILE=sco"; then
-        amixer -D bluealsa sset "EDIFIER X2 Plus SCO" 100% unmute >/dev/null 2>&1 || true
+        amixer -D bluealsa sset "EDIFIER X2 Plus SCO" playback unmute >/dev/null 2>&1 || true
     fi
 }
 
@@ -117,7 +117,7 @@ start() {
     cd "$STAGE"
     export LD_LIBRARY_PATH="$STAGE/dl_lib:/usr/lib:/lib"
     export MAIX_WEBRTC_AUDIO_SOURCE="mic"
-    export MAIX_WEBRTC_BT_DEVICE="bluealsa:DEV=6C:16:29:7B:00:D4,PROFILE=sco"
+    export MAIX_WEBRTC_BT_DEVICE="bluealsa:DEV=6C:16:29:7B:00:D4,PROFILE=sco,SOFTVOL=yes"
 
     echo "Starting WebRTC M2 candidate..."
     nohup "$BIN" > "$LOG" 2>&1 &

@@ -208,22 +208,23 @@ def main():
         c_beg = s1["irqs"].get(irq, (c_end, name))[0]
         print(f"  IRQ {irq:<3} ({name}): {(c_end - c_beg) / dt:8.1f}/s")
 
+    p_dt = dt
+    if a1 and a2 and a2.get("timestamp_ms", 0) > a1.get("timestamp_ms", 0):
+        p_dt = (a2["timestamp_ms"] - a1["timestamp_ms"]) / 1000.0
+
     if a1 and a2:
         up1, up2 = a1.get("uplink", {}), a2.get("uplink", {})
         dn1, dn2 = a1.get("downlink") or {}, a2.get("downlink") or {}
         pb1, pb2 = dn1.get("playback") or {}, dn2.get("playback") or {}
-        print("\nAudio Rates:")
+        print(f"\nAudio Rates (a_dt={p_dt:.2f}s):")
         if up1 and up2:
-            print(f"  Uplink: sent={(up2.get('packets_sent',0)-up1.get('packets_sent',0))/dt:.1f} pkt/s, failed={(up2.get('packets_failed',0)-up1.get('packets_failed',0))/dt:.1f}/s")
+            print(f"  Uplink: sent={(up2.get('packets_sent',0)-up1.get('packets_sent',0))/p_dt:.1f} pkt/s, failed={(up2.get('packets_failed',0)-up1.get('packets_failed',0))/p_dt:.1f}/s")
         if dn1 and dn2:
-            print(f"  Downlink: talk={dn2.get('talk_active')} rx={(dn2.get('packets_received',0)-dn1.get('packets_received',0))/dt:.1f} pkt/s, dec={(dn2.get('packets_decoded',0)-dn1.get('packets_decoded',0))/dt:.1f} pkt/s, err={dn2.get('decode_errors',0)-dn1.get('decode_errors',0)}")
+            print(f"  Downlink: talk={dn2.get('talk_active')} rx={(dn2.get('packets_received',0)-dn1.get('packets_received',0))/p_dt:.1f} pkt/s, dec={(dn2.get('packets_decoded',0)-dn1.get('packets_decoded',0))/p_dt:.1f} pkt/s, err={dn2.get('decode_errors',0)-dn1.get('decode_errors',0)}")
         if pb1 and pb2:
-            print(f"  Playback: frames={(pb2.get('frames_written',0)-pb1.get('frames_written',0))/dt:.1f}/s, underruns={pb2.get('underruns',0)-pb1.get('underruns',0)}, alsa_err={pb2.get('alsa_errors',0)-pb1.get('alsa_errors',0)}, open={pb2.get('is_device_open')}")
+            print(f"  Playback: frames={(pb2.get('frames_written',0)-pb1.get('frames_written',0))/p_dt:.1f}/s, underruns={pb2.get('underruns',0)-pb1.get('underruns',0)}, alsa_err={pb2.get('alsa_errors',0)-pb1.get('alsa_errors',0)}, open={pb2.get('is_device_open')}")
 
     if p1 and p2:
-        p_dt = dt
-        if a1 and a2 and a2.get("timestamp_ms", 0) > a1.get("timestamp_ms", 0):
-            p_dt = (a2["timestamp_ms"] - a1["timestamp_ms"]) / 1000.0
         print(f"\nPerf Instrumentation Deltas (p_dt={p_dt:.2f}s):")
         for sec in ("video", "mic", "rx", "playback", "mutex"):
             d1, d2 = p1.get(sec, {}), p2.get(sec, {})

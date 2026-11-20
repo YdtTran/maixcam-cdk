@@ -1,0 +1,20 @@
+--- /tmp/aic_btsdio.h.orig	2026-11-13 13:24:24.119824908 +0700
++++ /tmp/aic_build/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/aic_btsdio.h	2026-11-13 13:22:59.311864126 +0700
+@@ -33,13 +33,15 @@
+ 
+ #define AICBT_DBG_FLAG          1
+ 
++#include "aicwf_debug.h"
++
+ #if AICBT_DBG_FLAG
+-#define AICBT_DBG(fmt, arg...) printk( "aic_btsdio: " fmt "\n" , ## arg)
++#define AICBT_DBG(fmt, arg...) do { if (aicwf_dbg_level & LOGDEBUG) printk(KERN_DEBUG "aic_btsdio: " fmt "\n" , ## arg); } while (0)
+ #else
+ #define AICBT_DBG(fmt, arg...)
+ #endif
+ 
+-#define AICBT_INFO(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
++#define AICBT_INFO(fmt, arg...) do { if (aicwf_dbg_level & LOGINFO) printk(KERN_INFO "aic_btsdio: " fmt "\n" , ## arg); } while (0)
+ #define AICBT_WARN(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
+ #define AICBT_ERR(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
+ 

@@ -12,6 +12,16 @@
 
 namespace maix::webrtc {
 
+inline std::atomic<int> earbud_mic_boost_percent{200};
+
+inline void apply_earbud_mic_boost(int16_t *samples, size_t count, int percent) {
+    if (percent == 100) return;
+    for (size_t i = 0; i < count; ++i) {
+        const auto scaled = static_cast<int32_t>(samples[i]) * percent / 100;
+        samples[i] = std::clamp<int32_t>(scaled, INT16_MIN, INT16_MAX);
+    }
+}
+
 // Compatibility name for the raw PCM frame accumulator. No signal processing
 // is performed: complete microphone frames are copied unchanged into Opus.
 class MaixAudioUplinkDSP {

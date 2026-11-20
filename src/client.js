@@ -18,6 +18,8 @@ const clientId = randomId(10);
     let dc = null;
     let localStream = null;
     let localMicTrack = null;
+    let filteredTrack = null;
+    let filterContext = null;
     let silentAudioTrack = null;
     let audioTransceiver = null;
     let isListening = false;
@@ -29,6 +31,59 @@ const clientId = randomId(10);
     const connText = document.getElementById('conn-text');
     const remoteAudio = document.getElementById('remote-audio');
     const fullscreenBtn = document.getElementById('fullscreen-btn');
+    const noiseStatus = document.getElementById('noise-status');
+    const noiseInput = document.getElementById('noise-input');
+    const noiseOutput = document.getElementById('noise-output');
+    const noiseMix = document.getElementById('noise-mix');
+    const noiseMixValue = document.getElementById('noise-mix-value');
+    let noiseProcessor = null;
+
+    if (noiseMix) noiseMix.oninput = () => {
+        if (noiseMixValue) noiseMixValue.textContent = noiseMix.value + '%';
+        if (noiseProcessor) noiseProcessor.port.postMessage({ mix: Number(noiseMix.value) / 100 });
+    };
+    function bindEarbudVolume(id, fullVolume = 15) {
+        const slider = document.getElementById(id);
+        const label = document.getElementById(id + '-value');
+        if (!slider || !label) return;
+        const url = '/api/' + id;
+        async function readVolume() {
+            try {
+                const response = await fetch(url, { cache: 'no-store' });
+                if (!response.ok) throw new Error('unavailable');
+                const { volume } = await response.json();
+                slider.value = volume;
+                slider.disabled = false;
+                label.textContent = Math.round(volume * 100 / fullVolume) + '%';
+            } catch (_) {
+                slider.disabled = true;
+                label.textContent = 'Unavailable';
+            }
+        }
+        slider.onchange = async () => {
+            slider.disabled = true;
+            try {
+                const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: slider.value });
+                if (!response.ok) throw new Error('unavailable');
+                await readVolume();
+            } catch (_) {
+                await readVolume();
+                label.textContent = 'Could not set volume';
+            }
+        };
+        readVolume();
+    }
+    bindEarbudVolume('earbud-volume');
+    bindEarbudVolume('earbud-mic-volume');
+    bindEarbudVolume('earbud-mic-boost', 100);
+
+    function updateNoiseStatus() {
+        if (noiseStatus) noiseStatus.textContent = !isTalking ? 'Talk is off' : filteredTrack ? 'RNNoise active' : 'Unavailable — unfiltered microphone';
+        if (!isTalking || !filteredTrack) {
+            if (noiseInput) noiseInput.value = 0;
+            if (noiseOutput) noiseOutput.value = 0;
+        }
+    }
 
     const MIC_MUTED_SVG = '<svg class="icon" viewBox="0 0 24 24"><path d="m18.54 18.54a10.8 10.8 0 0 1-6.54 2.46c-5.52 0-10-4.48-10-10 0-2.45.88-4.7 2.34-6.46"/><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><line x1="1" x2="23" y1="1" y2="23"/></svg>';
     const MIC_LIVE_SVG = '<svg class="icon" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>';
@@ -56,7 +111,7 @@ const clientId = randomId(10);
         if (!isTalking) {
             return getSilentTrack();
         }
-        return localMicTrack || getSilentTrack();
+        return filteredTrack || localMicTrack || getSilentTrack();
     }
 
     websocket.onopen = () => {
@@ -73,6 +128,7 @@ const clientId = randomId(10);
         clearInterval(heartbeat);
         stopTalk();
         if (localStream) localStream.getTracks().forEach(track => track.stop());
+        if (filterContext) filterContext.close();
         if (pc) pc.close();
         setTimeout(() => location.reload(), 4000 + Math.random() * 2000);
         if (connBadge && connText) {
@@ -244,13 +300,14 @@ const clientId = randomId(10);
         };
     }
 
-    // --- CALL-APP TALK BUTTON (DIRECT MICROPHONE TRACK) ---
+    // --- CALL-APP TALK BUTTON ---
     async function toggleTalk() {
         if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
             alert('Microphone requires HTTPS with the MaixCAM certificate authority trusted on this device.');
             return;
         }
         if (!localStream || !localMicTrack) {
+            if (talkBtn) talkBtn.disabled = true;
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({
                     audio: {
@@ -263,18 +320,45 @@ const clientId = randomId(10);
 
                 localMicTrack = localStream.getAudioTracks()[0];
                 localMicTrack.enabled = true;
-
-                const trackToSend = getAudioTrackToSend();
-                if (trackToSend) trackToSend.enabled = true;
-
-                if (audioTransceiver && audioTransceiver.sender && trackToSend) {
-                    await audioTransceiver.sender.replaceTrack(trackToSend);
+                try {
+                    filterContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+                    if (filterContext.sampleRate !== 48000) throw new Error('48 kHz audio unavailable');
+                    await filterContext.audioWorklet.addModule('/demo/rnnoise/processor.js');
+                    const source = filterContext.createMediaStreamSource(localStream);
+                    const processor = new AudioWorkletNode(filterContext, 'rnnoise');
+                    noiseProcessor = processor;
+                    processor.port.postMessage({ mix: Number(noiseMix?.value ?? 100) / 100 });
+                    processor.port.onmessage = ({ data }) => {
+                        if (!isTalking || !filteredTrack) return;
+                        const level = rms => Math.max(0, Math.min(1, (20 * Math.log10(Math.max(rms, 0.001)) + 60) / 60));
+                        if (noiseInput) noiseInput.value = level(data.input);
+                        if (noiseOutput) noiseOutput.value = level(data.output);
+                    };
+                    const destination = filterContext.createMediaStreamDestination();
+                    source.connect(processor).connect(destination);
+                    filteredTrack = destination.stream.getAudioTracks()[0];
+                    processor.onprocessorerror = () => {
+                        filteredTrack = null;
+                        noiseProcessor = null;
+                        updateNoiseStatus();
+                        console.warn('[Audio] RNNoise failed; using original microphone');
+                        if (isTalking && audioTransceiver?.sender) audioTransceiver.sender.replaceTrack(localMicTrack).catch(console.warn);
+                    };
+                    await filterContext.resume();
+                } catch (error) {
+                    console.warn('[Audio] RNNoise unavailable; using original microphone:', error);
+                    filteredTrack = null;
+                    noiseProcessor = null;
+                    if (filterContext) await filterContext.close();
+                    filterContext = null;
                 }
-
-                startTalk();
+                if (document.hidden) localMicTrack.enabled = false;
+                else await startTalk();
             } catch (err) {
                 console.error('[Audio] Microphone permission error:', err);
                 alert('Microphone permission required to talk: ' + err.message);
+            } finally {
+                if (talkBtn) talkBtn.disabled = false;
             }
             return;
         }
@@ -308,6 +392,7 @@ const clientId = randomId(10);
     async function startTalk() {
         if (isTalking) return;
         isTalking = true;
+        updateNoiseStatus();
 
         if (localMicTrack) localMicTrack.enabled = true;
 
@@ -334,6 +419,7 @@ const clientId = randomId(10);
     async function stopTalk() {
         if (!isTalking) return;
         isTalking = false;
+        updateNoiseStatus();
 
         if (localMicTrack) {
             localMicTrack.enabled = false;

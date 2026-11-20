@@ -4,6 +4,10 @@
 #include <vector>
 
 int main() {
+    std::array<int16_t, 5> boosted{1200, -1200, 20000, -20000, 0};
+    maix::webrtc::apply_earbud_mic_boost(boosted.data(), boosted.size(), 200);
+    assert((boosted == std::array<int16_t, 5>{2400, -2400, 32767, -32768, 0}));
+
     maix::webrtc::MaixAudioUplinkDSP audio;
     std::vector<int16_t> source(1920);
     for (size_t i = 0; i < source.size(); ++i) {

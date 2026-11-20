@@ -14,9 +14,15 @@
 #include <atomic>
 #include <functional>
 #include <cstdlib>
+#include <cstdio>
+#include <fstream>
+#include <vector>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <stdexcept>
 #include "maix_webrtc_audio_dsp.hpp"
 #include "g4c4_perf.hpp"
+#include "rnnoise_demo_assets.hpp"
 #ifndef CPPHTTPLIB_OPENSSL_SUPPORT
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #endif
@@ -933,13 +939,39 @@ private:
 
                 <div id="tab-audio-content" style="display:none; flex-direction:column; flex:1; min-height:0; padding:12px; gap:12px;">
                     <div class="spec-list">
-                        <div class="spec-row"><span class="spec-name">Earbuds to browser</span><span class="spec-val">Raw microphone audio &rarr; Opus WebRTC</span></div>
-                        <div class="spec-row"><span class="spec-name">Browser to earbuds</span><span class="spec-val">Direct microphone track &rarr; Opus &rarr; Bluetooth</span></div>
-                        <div class="spec-row"><span class="spec-name">Audio processing</span><span class="spec-val">Off</span></div>
+                        <div class="spec-row"><span class="spec-name">Noise suppression</span><span id="noise-status" class="spec-val" role="status">Talk is off</span></div>
+                        <div class="spec-row"><label class="spec-name" for="noise-mix">Filter strength</label><input id="noise-mix" type="range" min="0" max="100" value="100" aria-describedby="noise-mix-value"><output id="noise-mix-value">100%</output></div>
+                        <div class="spec-row"><label class="spec-name" for="noise-input">Mic input</label><meter id="noise-input" min="0" max="1" value="0">0</meter></div>
+                        <div class="spec-row"><label class="spec-name" for="noise-output">Filtered output</label><meter id="noise-output" min="0" max="1" value="0">0</meter></div>
+                        <div class="spec-row"><label class="spec-name" for="earbud-volume">Earbuds playback</label><input id="earbud-volume" type="range" min="0" max="15" step="1" disabled aria-describedby="earbud-volume-value"><output id="earbud-volume-value" role="status">Checking…</output></div>
+                        <div class="spec-row"><label class="spec-name" for="earbud-mic-volume">Earbuds microphone</label><input id="earbud-mic-volume" type="range" min="0" max="15" step="1" disabled aria-describedby="earbud-mic-volume-value"><output id="earbud-mic-volume-value" role="status">Checking…</output></div>
+                        <div class="spec-row"><label class="spec-name" for="earbud-mic-boost">Microphone boost</label><input id="earbud-mic-boost" type="range" min="100" max="300" step="10" disabled aria-describedby="earbud-mic-boost-value"><output id="earbud-mic-boost-value" role="status">Checking…</output></div>
+                    </div>
+                    <div class="spec-list">
+                        <div class="spec-row"><span class="spec-name">Earbuds to browser</span><span class="spec-val">Microphone boost &rarr; Opus WebRTC</span></div>
+                        <div class="spec-row"><span class="spec-name">Browser to earbuds</span><span class="spec-val">Microphone &rarr; noise suppression &rarr; Opus &rarr; Bluetooth</span></div>
+                        <div class="spec-row"><span class="spec-name">Audio processing</span><span class="spec-val">RNNoise on browser microphone when supported</span></div>
                     </div>
                 </div>
 
-                <div id="tab-hw-content" style="display:none; flex-direction:column; flex:1; min-height:0;">
+                <div id="tab-hw-content" style="display:none; flex-direction:column; flex:1; min-height:0; overflow-y:auto;">
+                    <div style="padding:12px; border-bottom:1px solid rgba(255,255,255,0.08); display:flex; flex-direction:column; gap:8px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span style="font-weight:600; font-size:13px;">Wi-Fi Setup (AP fallback only)</span>
+                            <span id="wifi-mode-badge" style="font-size:11px; opacity:0.85;">Checking...</span>
+                        </div>
+                        <div style="display:flex; gap:6px;">
+                            <input id="wifi-ssid" type="text" list="wifi-ssid-list" placeholder="Wi-Fi SSID" style="flex:1; min-width:0; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.25); color:inherit; font-size:12px;">
+                            <datalist id="wifi-ssid-list"></datalist>
+                            <button type="button" class="btn-action-sm" onclick="scanWifi()">Scan</button>
+                        </div>
+                        <div style="display:flex; gap:6px;">
+                            <input id="wifi-pass" type="password" placeholder="Password (empty if open)" style="flex:1; min-width:0; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.25); color:inherit; font-size:12px;">
+                            <button type="button" class="btn-action-sm" onclick="connectWifi()">Connect</button>
+                            <button type="button" class="btn-action-sm" onclick="switchWifiAp()" title="Switch back to Setup AP">Setup AP</button>
+                        </div>
+                        <div id="wifi-msg" style="font-size:11px; opacity:0.8;"></div>
+                    </div>
                     <div class="spec-list">
                         <div class="spec-row">
                             <span class="spec-name">SoC Platform</span>
@@ -1512,6 +1544,77 @@ private:
             a.download = `snapshot_${stamp}.png`;
             a.click();
         }
+
+        async function refreshWifiStatus() {
+            const badge = document.getElementById('wifi-mode-badge');
+            if (!badge) return;
+            try {
+                const res = await fetch('/api/wifi/status');
+                const st = await res.json();
+                if (st.mode === 'sta') {
+                    badge.textContent = `STA: ${st.ssid} (${st.ip || 'no IP'}, ${st.rssi} dBm)`;
+                } else if (st.mode === 'ap') {
+                    badge.textContent = `Setup AP: ${st.ssid} (${st.ip || '192.168.4.1'})`;
+                } else {
+                    badge.textContent = 'Wi-Fi: Disconnected';
+                }
+            } catch {
+                badge.textContent = 'Wi-Fi: Status unavailable';
+            }
+        }
+
+        async function scanWifi() {
+            const msg = document.getElementById('wifi-msg');
+            const dl = document.getElementById('wifi-ssid-list');
+            msg.textContent = 'Scanning nearby Wi-Fi networks...';
+            try {
+                const res = await fetch('/api/wifi/scan');
+                const data = await res.json();
+                dl.innerHTML = '';
+                (data.ssids || []).forEach((s) => {
+                    const opt = document.createElement('option');
+                    opt.value = s;
+                    dl.appendChild(opt);
+                });
+                msg.textContent = `Found ${(data.ssids || []).length} network(s). Pick or type SSID.`;
+            } catch {
+                msg.textContent = 'Scan failed.';
+            }
+        }
+
+        async function connectWifi() {
+            const ssid = document.getElementById('wifi-ssid').value.trim();
+            const password = document.getElementById('wifi-pass').value;
+            const msg = document.getElementById('wifi-msg');
+            if (!ssid) { msg.textContent = 'Enter an SSID first.'; return; }
+            msg.textContent = `Saving "${ssid}" and connecting...`;
+            try {
+                const res = await fetch('/api/wifi/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ssid, password })
+                });
+                const data = await res.json();
+                msg.textContent = data.ok
+                    ? `${data.message}. If using Setup AP, reconnect to "${ssid}" (or device falls back to Setup AP if connection fails).`
+                    : (data.error || 'Failed to save Wi-Fi config.');
+            } catch {
+                msg.textContent = 'Request failed.';
+            }
+        }
+
+        async function switchWifiAp() {
+            const msg = document.getElementById('wifi-msg');
+            msg.textContent = 'Switching to Setup AP (MaixCAM)...';
+            try {
+                await fetch('/api/wifi/ap', { method: 'POST' });
+                msg.textContent = 'Switched to Setup AP: MaixCAM (192.168.4.1).';
+            } catch {
+                msg.textContent = 'Request failed.';
+            }
+        }
+
+        refreshWifiStatus();
     </script>
 </body>
 </html>
@@ -1539,6 +1642,8 @@ const clientId = randomId(10);
     let dc = null;
     let localStream = null;
     let localMicTrack = null;
+    let filteredTrack = null;
+    let filterContext = null;
     let silentAudioTrack = null;
     let audioTransceiver = null;
     let isListening = false;
@@ -1550,6 +1655,59 @@ const clientId = randomId(10);
     const connText = document.getElementById('conn-text');
     const remoteAudio = document.getElementById('remote-audio');
     const fullscreenBtn = document.getElementById('fullscreen-btn');
+    const noiseStatus = document.getElementById('noise-status');
+    const noiseInput = document.getElementById('noise-input');
+    const noiseOutput = document.getElementById('noise-output');
+    const noiseMix = document.getElementById('noise-mix');
+    const noiseMixValue = document.getElementById('noise-mix-value');
+    let noiseProcessor = null;
+
+    if (noiseMix) noiseMix.oninput = () => {
+        if (noiseMixValue) noiseMixValue.textContent = noiseMix.value + '%';
+        if (noiseProcessor) noiseProcessor.port.postMessage({ mix: Number(noiseMix.value) / 100 });
+    };
+    function bindEarbudVolume(id, fullVolume = 15) {
+        const slider = document.getElementById(id);
+        const label = document.getElementById(id + '-value');
+        if (!slider || !label) return;
+        const url = '/api/' + id;
+        async function readVolume() {
+            try {
+                const response = await fetch(url, { cache: 'no-store' });
+                if (!response.ok) throw new Error('unavailable');
+                const { volume } = await response.json();
+                slider.value = volume;
+                slider.disabled = false;
+                label.textContent = Math.round(volume * 100 / fullVolume) + '%';
+            } catch (_) {
+                slider.disabled = true;
+                label.textContent = 'Unavailable';
+            }
+        }
+        slider.onchange = async () => {
+            slider.disabled = true;
+            try {
+                const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: slider.value });
+                if (!response.ok) throw new Error('unavailable');
+                await readVolume();
+            } catch (_) {
+                await readVolume();
+                label.textContent = 'Could not set volume';
+            }
+        };
+        readVolume();
+    }
+    bindEarbudVolume('earbud-volume');
+    bindEarbudVolume('earbud-mic-volume');
+    bindEarbudVolume('earbud-mic-boost', 100);
+
+    function updateNoiseStatus() {
+        if (noiseStatus) noiseStatus.textContent = !isTalking ? 'Talk is off' : filteredTrack ? 'RNNoise active' : 'Unavailable — unfiltered microphone';
+        if (!isTalking || !filteredTrack) {
+            if (noiseInput) noiseInput.value = 0;
+            if (noiseOutput) noiseOutput.value = 0;
+        }
+    }
 
     const MIC_MUTED_SVG = '<svg class="icon" viewBox="0 0 24 24"><path d="m18.54 18.54a10.8 10.8 0 0 1-6.54 2.46c-5.52 0-10-4.48-10-10 0-2.45.88-4.7 2.34-6.46"/><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><line x1="1" x2="23" y1="1" y2="23"/></svg>';
     const MIC_LIVE_SVG = '<svg class="icon" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>';
@@ -1577,7 +1735,7 @@ const clientId = randomId(10);
         if (!isTalking) {
             return getSilentTrack();
         }
-        return localMicTrack || getSilentTrack();
+        return filteredTrack || localMicTrack || getSilentTrack();
     }
 
     websocket.onopen = () => {
@@ -1594,6 +1752,7 @@ const clientId = randomId(10);
         clearInterval(heartbeat);
         stopTalk();
         if (localStream) localStream.getTracks().forEach(track => track.stop());
+        if (filterContext) filterContext.close();
         if (pc) pc.close();
         setTimeout(() => location.reload(), 4000 + Math.random() * 2000);
         if (connBadge && connText) {
@@ -1765,13 +1924,14 @@ const clientId = randomId(10);
         };
     }
 
-    // --- CALL-APP TALK BUTTON (DIRECT MICROPHONE TRACK) ---
+    // --- CALL-APP TALK BUTTON ---
     async function toggleTalk() {
         if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
             alert('Microphone requires HTTPS with the MaixCAM certificate authority trusted on this device.');
             return;
         }
         if (!localStream || !localMicTrack) {
+            if (talkBtn) talkBtn.disabled = true;
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({
                     audio: {
@@ -1784,18 +1944,45 @@ const clientId = randomId(10);
 
                 localMicTrack = localStream.getAudioTracks()[0];
                 localMicTrack.enabled = true;
-
-                const trackToSend = getAudioTrackToSend();
-                if (trackToSend) trackToSend.enabled = true;
-
-                if (audioTransceiver && audioTransceiver.sender && trackToSend) {
-                    await audioTransceiver.sender.replaceTrack(trackToSend);
+                try {
+                    filterContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+                    if (filterContext.sampleRate !== 48000) throw new Error('48 kHz audio unavailable');
+                    await filterContext.audioWorklet.addModule('/demo/rnnoise/processor.js');
+                    const source = filterContext.createMediaStreamSource(localStream);
+                    const processor = new AudioWorkletNode(filterContext, 'rnnoise');
+                    noiseProcessor = processor;
+                    processor.port.postMessage({ mix: Number(noiseMix?.value ?? 100) / 100 });
+                    processor.port.onmessage = ({ data }) => {
+                        if (!isTalking || !filteredTrack) return;
+                        const level = rms => Math.max(0, Math.min(1, (20 * Math.log10(Math.max(rms, 0.001)) + 60) / 60));
+                        if (noiseInput) noiseInput.value = level(data.input);
+                        if (noiseOutput) noiseOutput.value = level(data.output);
+                    };
+                    const destination = filterContext.createMediaStreamDestination();
+                    source.connect(processor).connect(destination);
+                    filteredTrack = destination.stream.getAudioTracks()[0];
+                    processor.onprocessorerror = () => {
+                        filteredTrack = null;
+                        noiseProcessor = null;
+                        updateNoiseStatus();
+                        console.warn('[Audio] RNNoise failed; using original microphone');
+                        if (isTalking && audioTransceiver?.sender) audioTransceiver.sender.replaceTrack(localMicTrack).catch(console.warn);
+                    };
+                    await filterContext.resume();
+                } catch (error) {
+                    console.warn('[Audio] RNNoise unavailable; using original microphone:', error);
+                    filteredTrack = null;
+                    noiseProcessor = null;
+                    if (filterContext) await filterContext.close();
+                    filterContext = null;
                 }
-
-                startTalk();
+                if (document.hidden) localMicTrack.enabled = false;
+                else await startTalk();
             } catch (err) {
                 console.error('[Audio] Microphone permission error:', err);
                 alert('Microphone permission required to talk: ' + err.message);
+            } finally {
+                if (talkBtn) talkBtn.disabled = false;
             }
             return;
         }
@@ -1829,6 +2016,7 @@ const clientId = randomId(10);
     async function startTalk() {
         if (isTalking) return;
         isTalking = true;
+        updateNoiseStatus();
 
         if (localMicTrack) localMicTrack.enabled = true;
 
@@ -1855,6 +2043,7 @@ const clientId = randomId(10);
     async function stopTalk() {
         if (!isTalking) return;
         isTalking = false;
+        updateNoiseStatus();
 
         if (localMicTrack) {
             localMicTrack.enabled = false;
@@ -1988,12 +2177,107 @@ public:
             return true;
         }
 
-        _server->Get("/", [](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(WEBRTC_INDEX_HTML, "text/html; charset=utf-8");
+        auto is_setup_ap_req = [](const httplib::Request& req) {
+            return req.local_addr == "192.168.4.1" ||
+                   req.get_header_value("Host").rfind("192.168.4.1", 0) == 0;
+        };
+
+        static const char* WIFI_SETUP_HTML = R"HTML(<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MaixCAM Wi-Fi Setup</title>
+<style>
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;color:#e2e8f0;font-family:-apple-system,system-ui,sans-serif;padding:16px}
+.card{width:100%;max-width:380px;background:#1e293b;border:1px solid #334155;border-radius:14px;padding:20px;box-shadow:0 12px 32px rgba(0,0,0,.4)}
+h1{margin:0 0 6px;font-size:20px}p{margin:0 0 16px;font-size:13px;color:#94a3b8}
+label{display:block;font-size:12px;color:#cbd5e1;margin:10px 0 4px}
+input,select,button{width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;font-size:14px}
+input,select{background:#0f172a;color:#f8fafc;border:1px solid #475569}
+.row{display:flex;gap:8px}.row button{width:auto;white-space:nowrap}
+button{margin-top:12px;border:0;background:#2563eb;color:#fff;font-weight:600;cursor:pointer}
+button.sec{background:#334155;margin-top:0}
+#msg{margin-top:12px;font-size:13px;color:#93c5fd;min-height:18px}
+</style></head><body><div class="card">
+<h1>MaixCAM Wi-Fi Setup</h1>
+<p>Access point is for Wi-Fi setup only. Connect MaixCAM to your Wi-Fi network to stream video &amp; audio.</p>
+<label>Wi-Fi Network (SSID)</label>
+<div class="row"><input id="ssid" list="ssids" placeholder="Enter or scan SSID"><button class="sec" type="button" onclick="scan()">Scan</button></div>
+<datalist id="ssids"></datalist>
+<label>Password</label>
+<input id="pass" type="password" placeholder="Leave empty for open network">
+<button type="button" onclick="save()">Connect &amp; Migrate to Wi-Fi</button>
+<div id="msg"></div><div id="done" style="display:none;margin-top:12px;padding:12px;border-radius:10px;background:#0f172a;border:1px solid #22c55e">
+<div style="font-size:13px;color:#86efac;font-weight:600;margin-bottom:6px">Connected to Wi-Fi!</div>
+<div style="font-size:12px;color:#cbd5e1">Open this address after switching to your Wi-Fi:</div>
+<div id="sta-url" style="margin:6px 0 8px;font-size:15px;font-weight:700;color:#fff;word-break:break-all"></div>
+<button class="sec" type="button" onclick="closeAp()">Close Setup AP Now</button>
+</div></div>
+<script>
+async function scan(){
+  const m=document.getElementById('msg');m.textContent='Scanning...';
+  try{const r=await fetch('/api/wifi/scan');const d=await r.json();
+  const dl=document.getElementById('ssids');dl.innerHTML='';
+  (d.ssids||[]).forEach(s=>{const o=document.createElement('option');o.value=s;dl.appendChild(o);});
+  m.textContent=`Found ${(d.ssids||[]).length} network(s).`;}catch{m.textContent='Scan failed.';}
+}
+async function closeAp(){
+  const m=document.getElementById('msg');
+  try{await fetch('/api/wifi/close_ap',{method:'POST'});m.textContent='Setup AP closed. Switch your device to Wi-Fi and open the URL above.';}catch{}
+}
+async function save(){
+  const ssid=document.getElementById('ssid').value.trim(),password=document.getElementById('pass').value;
+  const m=document.getElementById('msg'),done=document.getElementById('done');
+  if(!ssid){m.textContent='Enter an SSID.';return;}
+  done.style.display='none';
+  m.textContent=`Connecting to ${ssid} (keeping Setup AP open)...`;
+  try{
+    const r=await fetch('/api/wifi/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,password})});
+    const d=await r.json();
+    if(!d.ok){m.textContent=d.error||'Failed.';return;}
+    for(let i=0;i<25;i++){
+      await new Promise(ok=>setTimeout(ok,1200));
+      const sr=await fetch('/api/wifi/status');const st=await sr.json();
+      if(st.sta_ip && (st.provision==='ok' || st.mode==='ap+sta' || st.mode==='sta')){
+        const url=`https://${st.sta_ip}:8000/`;
+        document.getElementById('sta-url').textContent=url;
+        done.style.display='block';
+        m.textContent='Setup AP will close automatically in ~12s.';
+        return;
+      }
+      if(st.provision==='fail'){
+        m.textContent='Connection failed (check SSID/password). Setup AP remains open.';
+        return;
+      }
+    }
+    m.textContent='Timed out waiting for IP. Setup AP remains open.';
+  }catch{m.textContent='Request failed.';}
+}
+scan();
+</script></body></html>)HTML";
+
+        _server->Get("/", [is_setup_ap_req](const httplib::Request& req, httplib::Response& res) {
+            if (is_setup_ap_req(req)) {
+                res.set_content(WIFI_SETUP_HTML, "text/html; charset=utf-8");
+            } else {
+                res.set_content(WEBRTC_INDEX_HTML, "text/html; charset=utf-8");
+            }
         });
 
-        _server->Get("/index.html", [](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(WEBRTC_INDEX_HTML, "text/html; charset=utf-8");
+        _server->Get("/index.html", [is_setup_ap_req](const httplib::Request& req, httplib::Response& res) {
+            if (is_setup_ap_req(req)) {
+                res.set_content(WIFI_SETUP_HTML, "text/html; charset=utf-8");
+            } else {
+                res.set_content(WEBRTC_INDEX_HTML, "text/html; charset=utf-8");
+            }
+        });
+
+        _server->Get("/demo/rnnoise/", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content(RNNOISE_DEMO_HTML, "text/html; charset=utf-8");
+        });
+        _server->Get("/demo/rnnoise/processor.js", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content(RNNOISE_DEMO_PROCESSOR, "application/javascript; charset=utf-8");
+        });
+        _server->Get("/demo/rnnoise/rnnoise-sync.js", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content(RNNOISE_DEMO_MODULE, "application/javascript; charset=utf-8");
         });
 
         _server->Get("/client.js", [this](const httplib::Request& req, httplib::Response& res) {
@@ -2008,6 +2292,61 @@ public:
             pos = js_content.find(marker);
             if (pos != std::string::npos) js_content.replace(pos, marker.size(), token ? token : "");
             res.set_content(js_content, "application/javascript; charset=utf-8");
+        });
+
+        auto register_earbud_volume = [this](const char *path, bool capture) {
+            _server->Get(path, [capture](const httplib::Request&, httplib::Response& res) {
+                FILE *fp = popen("amixer -D bluealsa sget 'EDIFIER X2 Plus SCO' 2>/dev/null", "r");
+                int volume = -1;
+                if (fp) {
+                    char line[512];
+                    while (fgets(line, sizeof(line), fp)) {
+                        const char *mono = std::strstr(line, "Mono: ");
+                        if (!mono) continue;
+                        const char *field = std::strstr(mono, capture ? "Capture " : "Playback ");
+                        if (field) std::sscanf(field + (capture ? 8 : 9), "%d", &volume);
+                    }
+                    if (pclose(fp) != 0) volume = -1;
+                }
+                if (volume < 0 || volume > 15) {
+                    res.status = 503;
+                    res.set_content("Earbuds unavailable", "text/plain");
+                    return;
+                }
+                res.set_content("{\"volume\":" + std::to_string(volume) + "}", "application/json");
+            });
+            _server->Post(path, [capture](const httplib::Request& req, httplib::Response& res) {
+                if (req.body.empty() || req.body.size() > 2 || req.body.find_first_not_of("0123456789") != std::string::npos) {
+                    res.status = 400;
+                    return;
+                }
+                int volume = std::stoi(req.body);
+                if (volume > 15) { res.status = 400; return; }
+                const std::string command = std::string("amixer -D bluealsa sset 'EDIFIER X2 Plus SCO' ")
+                    + (capture ? "capture " : "playback ") + std::to_string(volume) + " >/dev/null 2>&1";
+                if (std::system(command.c_str()) != 0) { res.status = 503; return; }
+                res.set_content("{\"ok\":true}", "application/json");
+            });
+        };
+        register_earbud_volume("/api/earbud-volume", false);
+        register_earbud_volume("/api/earbud-mic-volume", true);
+
+        _server->Get("/api/earbud-mic-boost", [](const httplib::Request&, httplib::Response& res) {
+            const int percent = maix::webrtc::earbud_mic_boost_percent.load(std::memory_order_relaxed);
+            res.set_content("{\"volume\":" + std::to_string(percent) + "}", "application/json");
+        });
+        _server->Post("/api/earbud-mic-boost", [](const httplib::Request& req, httplib::Response& res) {
+            if (req.body.size() != 3 || req.body.find_first_not_of("0123456789") != std::string::npos) {
+                res.status = 400;
+                return;
+            }
+            const int percent = std::stoi(req.body);
+            if (percent < 100 || percent > 300) {
+                res.status = 400;
+                return;
+            }
+            maix::webrtc::earbud_mic_boost_percent.store(percent, std::memory_order_relaxed);
+            res.set_content("{\"ok\":true}", "application/json");
         });
 
         _server->Get("/api/audio_stats", [this](const httplib::Request& req, httplib::Response& res) {
@@ -2063,6 +2402,193 @@ public:
             }
             if (_talk_callback) _talk_callback(act);
             res.set_content(act ? "{\"talk\":true}" : "{\"talk\":false}", "application/json; charset=utf-8");
+        });
+
+        auto json_esc = [](const std::string& s) {
+            std::string out;
+            out.reserve(s.size() + 8);
+            for (unsigned char c : s) {
+                if (c == '"' || c == '\\') { out.push_back('\\'); out.push_back(static_cast<char>(c)); }
+                else if (c >= 0x20 && c != 0x7f) { out.push_back(static_cast<char>(c)); }
+            }
+            return out;
+        };
+
+        auto run_cmd = [](const char* cmd) {
+            std::string out;
+            FILE* fp = popen(cmd, "r");
+            if (!fp) return out;
+            char buf[512];
+            while (fgets(buf, sizeof(buf), fp)) out += buf;
+            pclose(fp);
+            return out;
+        };
+
+        _server->Get("/api/wifi/status", [json_esc, run_cmd](const httplib::Request&, httplib::Response& res) {
+            auto parse_ip = [](const std::string& out) {
+                auto pos = out.find("inet ");
+                if (pos == std::string::npos) return std::string{};
+                pos += 5;
+                auto end = out.find('/', pos);
+                return end == std::string::npos ? std::string{} : out.substr(pos, end - pos);
+            };
+            std::string sta_ip = parse_ip(run_cmd("ip -4 -o addr show dev wlan1 2>/dev/null"));
+            std::string ap_ip = parse_ip(run_cmd("ip -4 -o addr show dev wlan0 2>/dev/null"));
+            bool ap_up = (ap_ip == "192.168.4.1" || !run_cmd("pidof hostapd 2>/dev/null").empty());
+            std::string link_out = run_cmd("iw dev wlan1 link 2>/dev/null");
+            bool sta_up = (!sta_ip.empty() && link_out.find("Connected to") != std::string::npos);
+            std::string ssid;
+            int rssi = 0;
+            if (sta_up) {
+                auto s = link_out.find("SSID: ");
+                if (s != std::string::npos) {
+                    s += 6;
+                    auto e = link_out.find('\n', s);
+                    ssid = link_out.substr(s, e == std::string::npos ? std::string::npos : e - s);
+                    while (!ssid.empty() && (ssid.back() == '\r' || ssid.back() == ' ')) ssid.pop_back();
+                }
+                auto r = link_out.find("signal: ");
+                if (r != std::string::npos) rssi = std::atoi(link_out.c_str() + r + 8);
+            } else if (ap_up) {
+                ssid = "MaixCAM";
+            }
+            std::string mode = (ap_up && sta_up) ? "ap+sta" : (sta_up ? "sta" : (ap_up ? "ap" : "down"));
+            std::string ip = sta_up ? sta_ip : ap_ip;
+            std::string prov = "idle";
+            {
+                std::ifstream pf("/run/maixcam-provision.state");
+                std::string line;
+                if (std::getline(pf, line)) {
+                    if (line.rfind("ok:", 0) == 0) {
+                        prov = "ok";
+                        if (sta_ip.empty()) sta_ip = line.substr(3);
+                    } else if (line == "connecting" || line == "fail") {
+                        prov = line;
+                    }
+                }
+            }
+            std::string body = "{\"mode\":\"" + mode + "\",\"ssid\":\"" + json_esc(ssid) +
+                               "\",\"ip\":\"" + json_esc(ip) + "\",\"sta_ip\":\"" + json_esc(sta_ip) +
+                               "\",\"rssi\":" + std::to_string(rssi) + ",\"provision\":\"" + prov + "\"}";
+            res.set_content(body, "application/json; charset=utf-8");
+        });
+
+        _server->Get("/api/wifi/scan", [json_esc, run_cmd](const httplib::Request&, httplib::Response& res) {
+            std::string out = run_cmd("iw dev wlan0 scan ap-force 2>/dev/null || iw dev wlan0 scan 2>/dev/null");
+            std::vector<std::string> ssids;
+            size_t p = 0;
+            while ((p = out.find("SSID: ", p)) != std::string::npos) {
+                p += 6;
+                size_t e = out.find('\n', p);
+                std::string s = out.substr(p, e == std::string::npos ? std::string::npos : e - p);
+                while (!s.empty() && (s.back() == '\r' || s.back() == ' ')) s.pop_back();
+                if (!s.empty() && s.find("\\x00") == std::string::npos) {
+                    bool dup = false;
+                    for (const auto& x : ssids) if (x == s) { dup = true; break; }
+                    if (!dup) {
+                        ssids.push_back(s);
+                        if (ssids.size() >= 20) break;
+                    }
+                }
+            }
+            std::string body = "{\"ssids\":[";
+            for (size_t i = 0; i < ssids.size(); ++i) {
+                if (i) body += ',';
+                body += "\"" + json_esc(ssids[i]) + "\"";
+            }
+            body += "]}";
+            res.set_content(body, "application/json; charset=utf-8");
+        });
+
+        _server->Post("/api/wifi/connect", [json_esc](const httplib::Request& req, httplib::Response& res) {
+            auto extract_field = [&](const char* key) -> std::string {
+                if (req.has_param(key)) return req.get_param_value(key);
+                std::string pat = std::string("\"") + key + "\"";
+                auto k = req.body.find(pat);
+                if (k == std::string::npos) return {};
+                auto c = req.body.find(':', k + pat.size());
+                if (c == std::string::npos) return {};
+                auto q1 = req.body.find('"', c + 1);
+                if (q1 == std::string::npos) return {};
+                std::string val;
+                for (size_t i = q1 + 1; i < req.body.size(); ++i) {
+                    char ch = req.body[i];
+                    if (ch == '\\' && i + 1 < req.body.size()) { val.push_back(req.body[++i]); }
+                    else if (ch == '"') { return val; }
+                    else { val.push_back(ch); }
+                }
+                return {};
+            };
+            auto has_ctrl = [](const std::string& s) {
+                for (unsigned char c : s) if (c < 0x20 || c == 0x7f) return true;
+                return false;
+            };
+            std::string ssid = extract_field("ssid");
+            std::string pass = extract_field("password");
+            if (ssid.empty() || ssid.size() > 32 || has_ctrl(ssid) || has_ctrl(pass)) {
+                res.status = 400;
+                res.set_content("{\"ok\":false,\"error\":\"Invalid SSID or characters\"}", "application/json; charset=utf-8");
+                return;
+            }
+            if (!pass.empty() && (pass.size() < 8 || pass.size() > 63)) {
+                res.status = 400;
+                res.set_content("{\"ok\":false,\"error\":\"Password must be 8-63 characters (or empty for open)\"}", "application/json; charset=utf-8");
+                return;
+            }
+            auto wpa_esc = [](const std::string& s) {
+                std::string o;
+                for (char c : s) {
+                    if (c == '\\' || c == '"') o.push_back('\\');
+                    o.push_back(c);
+                }
+                return o;
+            };
+            const char* tmp_path = "/etc/wpa_supplicant.conf.tmp";
+            const char* dst_path = "/etc/wpa_supplicant.conf";
+            {
+                std::ofstream f(tmp_path, std::ios::trunc);
+                if (!f) {
+                    res.status = 500;
+                    res.set_content("{\"ok\":false,\"error\":\"Failed to write wpa_supplicant.conf\"}", "application/json; charset=utf-8");
+                    return;
+                }
+                f << "ctrl_interface=/var/run/wpa_supplicant\nupdate_config=1\n\nnetwork={\n"
+                  << "\tssid=\"" << wpa_esc(ssid) << "\"\n";
+                if (pass.empty()) {
+                    f << "\tkey_mgmt=NONE\n";
+                } else {
+                    f << "\tpsk=\"" << wpa_esc(pass) << "\"\n";
+                }
+                f << "}\n";
+            }
+            chmod(tmp_path, 0600);
+            if (std::rename(tmp_path, dst_path) != 0) {
+                res.status = 500;
+                res.set_content("{\"ok\":false,\"error\":\"Failed to commit wpa_supplicant.conf\"}", "application/json; charset=utf-8");
+                return;
+            }
+            sync();
+            res.set_content("{\"ok\":true,\"message\":\"Connecting to " + json_esc(ssid) + "\"}", "application/json; charset=utf-8");
+            std::thread([]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                (void)std::system("/root/maixcam_standalone_network.sh provision_sta >/dev/null 2>&1");
+            }).detach();
+        });
+
+        _server->Post("/api/wifi/close_ap", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content("{\"ok\":true}", "application/json; charset=utf-8");
+            std::thread([]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                (void)std::system("/root/maixcam_standalone_network.sh stop_ap >/dev/null 2>&1");
+            }).detach();
+        });
+
+        _server->Post("/api/wifi/ap", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content("{\"ok\":true,\"message\":\"Switching to Setup AP\"}", "application/json; charset=utf-8");
+            std::thread([]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                (void)std::system("/root/maixcam_standalone_network.sh ap >/dev/null 2>&1");
+            }).detach();
         });
 
         _server->Get("/metrics", [this](const httplib::Request& req, httplib::Response& res) {

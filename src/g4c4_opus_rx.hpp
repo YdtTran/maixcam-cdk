@@ -108,13 +108,13 @@ public:
             return;
         }
 
-        if (!data || size == 0 || size > 4096) {
+        if (!data || size == 0 || size > 512) {
             dropped_busy_.fetch_add(1, std::memory_order_relaxed);
             return;
         }
 
         Packet packet;
-        packet.bytes.resize(size);
+        packet.size = static_cast<uint16_t>(size);
         std::memcpy(packet.bytes.data(), data, size);
         packet.timestamp = timestamp;
         packet.payload_type = payload_type;
@@ -170,7 +170,8 @@ public:
 
 private:
     struct Packet {
-        std::vector<unsigned char> bytes;
+        std::array<unsigned char, 512> bytes{};
+        uint16_t size = 0;
         uint32_t timestamp = 0;
         uint8_t payload_type = 0;
     };
@@ -245,7 +246,7 @@ private:
                 resampler_.reset();
             }
 
-            if (packet.bytes.empty()) {
+            if (packet.size == 0) {
                 // Stream idle: notify playback worker to flush any stale tail
                 if (playback_ && !diag_disable_pb_) {
                     playback_->notify_stream_idle();
@@ -260,7 +261,7 @@ private:
             int samples = opus_decode(
                 decoder,
                 packet.bytes.data(),
-                static_cast<opus_int32>(packet.bytes.size()),
+                static_cast<opus_int32>(packet.size),
                 pcm.data(),
                 static_cast<int>(pcm.size()),
                 0
